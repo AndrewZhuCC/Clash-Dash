@@ -111,6 +111,7 @@ struct GlobalSettingsView: View {
     @AppStorage("autoSpeedTestBeforeSwitch") private var autoSpeedTestBeforeSwitch = true
     @AppStorage("allowManualURLTestGroupSwitch") private var allowManualURLTestGroupSwitch = false
     @AppStorage("serverStatusTimeout") private var serverStatusTimeout = 2.0  // 默认2秒
+    @AppStorage("icloud_enabled_preference") private var iCloudEnabledPreference = false
     @State private var showClearCacheAlert = false
     @State private var showSyncErrorAlert = false
     @State private var syncErrorMessage = ""
@@ -264,6 +265,7 @@ struct GlobalSettingsView: View {
                     subtitle: "同步服务器配置、全局设置和外观设置到 iCloud",
                     isOn: $enableCloudSync
                 )
+                .disabled(!iCloudEnabledPreference)
                 
                 if enableCloudSync {
                     HStack {

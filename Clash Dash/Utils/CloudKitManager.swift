@@ -6,7 +6,7 @@ private let logger = LogManager.shared
 
 class CloudKitManager: ObservableObject {
     static let shared = CloudKitManager()
-    private let container = CKContainer.default()
+    private lazy var container: CKContainer = CKContainer.default()
     private let defaults = UserDefaults.standard
     private let recordType = "AppData"
     
@@ -84,7 +84,15 @@ class CloudKitManager: ObservableObject {
         }
     }
     
+    private var isCloudKitAvailable: Bool {
+        // 检查 iCloud 是否可用
+        return UserDefaults.standard.bool(forKey: "icloud_enabled_preference")
+    }
+    
     private func checkICloudStatus() async {
+        guard isCloudKitAvailable else {
+            return
+        }
         do {
             let status = try await container.accountStatus()
             await MainActor.run {
@@ -332,6 +340,10 @@ class CloudKitManager: ObservableObject {
     // }
     
     func syncToCloud() async throws {
+        guard isCloudKitAvailable else {
+            return
+        }
+        
         // 先检查 iCloud 状态
         await checkICloudStatus()
         guard iCloudStatus == "可用" else {
@@ -400,6 +412,10 @@ class CloudKitManager: ObservableObject {
     }
     
     func syncFromCloud() async throws {
+        guard isCloudKitAvailable else {
+            return
+        }
+        
         // 先检查 iCloud 状态
         await checkICloudStatus()
         guard iCloudStatus == "可用" else {
