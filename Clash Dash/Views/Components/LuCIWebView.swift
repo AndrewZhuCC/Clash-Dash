@@ -201,7 +201,7 @@ struct WebView: UIViewRepresentable {
             
             // 在清理完成后发送请求
             var request = URLRequest(url: url)
-            let cookieHeader = "sysauth=\(token); sysauth_http=\(token)"
+            let cookieHeader = "sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)"
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
@@ -287,8 +287,8 @@ class LuCIWebViewModel: ObservableObject {
                 throw NetworkError.invalidURL
             }
             
-            print("🔐 Web 访问 URL: \(finalURL.absoluteString)")
-            print("🔐 OpenWRT SSL设置: \(server.openWRTUseSSL)")
+            print("Web 访问 URL: \(finalURL.absoluteString)")
+            print("OpenWRT SSL设置: \(server.openWRTUseSSL)")
             
             url = finalURL
             isLoading = false

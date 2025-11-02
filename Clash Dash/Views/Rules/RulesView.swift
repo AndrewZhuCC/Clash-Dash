@@ -5,6 +5,7 @@ struct RulesView: View {
     @StateObject private var viewModel: RulesViewModel
     @State private var selectedTab = RuleTab.rules
     @State private var showSearch = false
+    @Environment(\.floatingTabBarVisible) private var floatingTabBarVisible
     
     init(server: ClashServer) {
         self.server = server
@@ -29,8 +30,8 @@ struct RulesView: View {
                 .padding()
                 
                 if showSearch {
-                    SearchBar(text: $viewModel.searchText, placeholder: "搜索规则")
-                        .padding(.horizontal)
+                    ModernSearchBar(text: $viewModel.searchText, placeholder: selectedTab == .rules ? "搜索规则" : "搜索规则订阅")
+                        .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -62,41 +63,28 @@ struct RulesView: View {
     }
     
     private var rulesList: some View {
-        RulesListRepresentable(
-            rules: viewModel.rules,
-            filteredRules: filteredRules,
-            sections: filteredSections,
-            allSections: allSections.map(String.init)
+        ModernRulesListView(
+            rules: filteredRules,
+            searchText: viewModel.searchText
         )
     }
     
-    private var filteredRules: [String: [RulesViewModel.Rule]] {
-        let filtered = viewModel.searchText.isEmpty ? viewModel.rules :
+    private var filteredRules: [RulesViewModel.Rule] {
+        return viewModel.searchText.isEmpty ? viewModel.rules :
             viewModel.rules.filter { rule in
                 rule.payload.localizedCaseInsensitiveContains(viewModel.searchText) ||
                 rule.type.localizedCaseInsensitiveContains(viewModel.searchText) ||
                 rule.proxy.localizedCaseInsensitiveContains(viewModel.searchText)
             }
-        
-        return ["Rules": filtered]
     }
     
     private var providersView: some View {
         Group {
             if viewModel.providers.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    Text("没有找到规则订阅信息")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(uiColor: .systemGroupedBackground))
+                ModernEmptyStateView()
             } else {
                 ZStack(alignment: .bottomTrailing) {
-                    ProvidersListRepresentable(
+                    ModernProvidersListView(
                         providers: viewModel.providers,
                         searchText: viewModel.searchText,
                         onRefresh: { [weak viewModel] provider in
@@ -106,43 +94,24 @@ struct RulesView: View {
                         }
                     )
                     
-                    // 添加更新全部按钮
-                    Button(action: {
+                    // 精美的全部更新按钮
+                    ModernRefreshAllButton(
+                        isRefreshing: viewModel.isRefreshingAll,
+                        action: {
                         Task {
                             await viewModel.refreshAllProviders()
                         }
-                    }) {
-                        ZStack {
-                            BlurView(style: .systemThinMaterial)
-                                .frame(width: 44, height: 44)
-                                .clipShape(Circle())
-                                .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
-                            
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(viewModel.isRefreshingAll ? .secondary : .primary)
-                                .rotationEffect(.degrees(viewModel.isRefreshingAll ? 360 : 0))
-                                .animation(
-                                    viewModel.isRefreshingAll ?
-                                        Animation.linear(duration: 1).repeatForever(autoreverses: false) :
-                                        .default,
-                                    value: viewModel.isRefreshingAll
-                                )
                         }
-                    }
-                    .disabled(viewModel.isRefreshingAll)
-                    .opacity(viewModel.isRefreshingAll ? 0.6 : 1.0)
-                    .animation(.easeInOut, value: viewModel.isRefreshingAll)
+                    )
                     .padding(.trailing, 16)
-                    .padding(.bottom, 80)  // 给搜索按钮留出空间
+                    .padding(.bottom, floatingTabBarVisible ? 168 : 80)
+                    .animation(.easeInOut(duration: 0.3), value: floatingTabBarVisible)
                 }
             }
         }
     }
     
-    private var filteredSections: [String] {
-        ["Rules"]
-    }
+
     
     private var searchButton: some View {
         Button(action: {
@@ -154,398 +123,44 @@ struct RulesView: View {
             }
         }) {
             ZStack {
-                BlurView(style: .systemThinMaterial)
-                    .frame(width: 44, height: 44)
-                    .clipShape(Circle())
-                    .shadow(color: Color.black.opacity(0.1), radius: 5, x: 0, y: 2)
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 48, height: 48)
+                    .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
+                
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.orange.opacity(0.3), Color.pink.opacity(0.3)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                    .frame(width: 48, height: 48)
                 
                 Image(systemName: showSearch ? "xmark" : "magnifyingglass")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .frame(width: 44, height: 44)
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.orange, Color.pink],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .scaleEffect(showSearch ? 0.9 : 1.0)
+                    .rotationEffect(.degrees(showSearch ? 90 : 0))
             }
         }
+        .scaleEffect(showSearch ? 1.05 : 1.0)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: showSearch)
         .padding(.trailing, 16)
-        .padding(.bottom, 16)
+        .padding(.bottom, floatingTabBarVisible ? 104 : 16)
+        .animation(.easeInOut(duration: 0.3), value: floatingTabBarVisible)
     }
 }
 
-private let allSections = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ#")
 
-// 新增 UITableView 包装器
-struct RulesListRepresentable: UIViewRepresentable {
-    let rules: [RulesViewModel.Rule]
-    let filteredRules: [String: [RulesViewModel.Rule]]
-    let sections: [String]
-    let allSections: [String]
-    
-    func makeUIView(context: Context) -> UITableView {
-        let tableView = UITableView(frame: .zero, style: .insetGrouped)
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        tableView.register(RuleCell.self, forCellReuseIdentifier: "RuleCell")
-        tableView.sectionIndexColor = .systemBlue
-        tableView.sectionIndexBackgroundColor = .clear
-        tableView.showsVerticalScrollIndicator = false
-        
-        // 添加这些配置来优化视图切换
-        tableView.estimatedRowHeight = 44
-        tableView.estimatedSectionHeaderHeight = 28
-        tableView.remembersLastFocusedIndexPath = true
-        return tableView
-    }
-    
-    func updateUIView(_ tableView: UITableView, context: Context) {
-        // 先更新 coordinator 的数据
-        context.coordinator.rules = rules
-        context.coordinator.filteredRules = filteredRules
-        context.coordinator.sections = sections
-        context.coordinator.allSections = allSections
-        
-        // 在主线程上安全地更新 UI
-        DispatchQueue.main.async {
-            // 禁用动画以避免更新问题
-            UIView.performWithoutAnimation {
-                tableView.reloadData()
-            }
-        }
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(rules: rules, filteredRules: filteredRules, sections: sections, allSections: allSections)
-    }
-    
-    class Coordinator: NSObject, UITableViewDelegate, UITableViewDataSource {
-        var rules: [RulesViewModel.Rule]
-        var filteredRules: [String: [RulesViewModel.Rule]]
-        var sections: [String]
-        var allSections: [String]
-        
-        init(rules: [RulesViewModel.Rule], filteredRules: [String: [RulesViewModel.Rule]], sections: [String], allSections: [String]) {
-            self.rules = rules
-            self.filteredRules = filteredRules
-            self.sections = sections
-            self.allSections = allSections
-        }
-        
-        // 实现必要的 UITableView 数据源方法
-        func numberOfSections(in tableView: UITableView) -> Int {
-            return sections.count
-        }
-        
-        func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-            let sectionKey = sections[section]
-            return filteredRules[sectionKey]?.count ?? 0
-        }
-        
-        func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "RuleCell", for: indexPath) as! RuleCell
-            let sectionKey = sections[indexPath.section]
-            if let rules = filteredRules[sectionKey] {
-                cell.configure(with: rules[indexPath.row])
-            }
-            return cell
-        }
-        
-        func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-            return nil // 不显示分组标题
-        }
-        
-        // 添加视图生命周期方法
-        func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-            // 确保单元格在显示前已经完成布局
-            cell.layoutIfNeeded()
-        }
-        
-        func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-            // 清理不再显示的单元格
-        }
-    }
-}
-
-// 修改 RuleCell
-class RuleCell: UITableViewCell {
-    private let payloadLabel = UILabel()
-    private let proxyLabel = UILabel()
-    private let typeLabel = UILabel()
-    
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        // 禁用选择效果
-        selectionStyle = .none
-        setupUI()
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    private func setupUI() {
-        // 移除右侧箭头
-        accessoryType = .none
-        
-        let topStack = UIStackView(arrangedSubviews: [payloadLabel, proxyLabel])
-        topStack.distribution = .equalSpacing
-        topStack.spacing = 8
-        
-        let mainStack = UIStackView(arrangedSubviews: [topStack, typeLabel])
-        mainStack.axis = .vertical
-        mainStack.spacing = 4
-        
-        contentView.addSubview(mainStack)
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            mainStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            mainStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            mainStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            mainStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
-        ])
-        
-        // 设置字体和颜色
-        payloadLabel.font = .systemFont(ofSize: 15)
-        proxyLabel.font = .systemFont(ofSize: 13)
-        typeLabel.font = .systemFont(ofSize: 13)
-        
-        proxyLabel.textColor = .systemBlue
-        typeLabel.textColor = .secondaryLabel
-        
-        // 配置标签属性
-        proxyLabel.textAlignment = .right
-        proxyLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        payloadLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-    }
-    
-    func configure(with rule: RulesViewModel.Rule) {
-        payloadLabel.text = rule.payload
-        proxyLabel.text = rule.proxy
-        typeLabel.text = rule.type
-    }
-}
-
-// 新增 ProvidersListRepresentable
-struct ProvidersListRepresentable: UIViewRepresentable {
-    let providers: [RulesViewModel.RuleProvider]
-    let searchText: String
-    let onRefresh: (RulesViewModel.RuleProvider) -> Void
-    
-    private var filteredProviders: [String: [RulesViewModel.RuleProvider]] {
-        let filtered = searchText.isEmpty ? providers :
-            providers.filter { provider in
-                provider.name.localizedCaseInsensitiveContains(searchText) ||
-                provider.behavior.localizedCaseInsensitiveContains(searchText) ||
-                provider.vehicleType.localizedCaseInsensitiveContains(searchText)
-            }
-        
-        return ["规则订阅": filtered]
-    }
-    
-    private var sections: [String] {
-        ["规则订阅"]
-    }
-    
-    func makeUIView(context: Context) -> UITableView {
-        let tableView = UITableView(frame: .zero, style: .insetGrouped)
-        tableView.delegate = context.coordinator
-        tableView.dataSource = context.coordinator
-        tableView.register(ProviderCell.self, forCellReuseIdentifier: "ProviderCell")
-        tableView.showsVerticalScrollIndicator = false
-        tableView.estimatedRowHeight = 88
-        tableView.estimatedSectionHeaderHeight = 28
-        tableView.remembersLastFocusedIndexPath = true
-        return tableView
-    }
-    
-    func updateUIView(_ tableView: UITableView, context: Context) {
-        context.coordinator.providers = providers
-        context.coordinator.filteredProviders = filteredProviders
-        context.coordinator.sections = sections
-        
-        DispatchQueue.main.async {
-            UIView.performWithoutAnimation {
-                tableView.reloadData()
-            }
-        }
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(
-            providers: providers,
-            filteredProviders: filteredProviders,
-            sections: sections,
-            onRefresh: onRefresh
-        )
-    }
-    
-    class Coordinator: NSObject, UITableViewDelegate, UITableViewDataSource {
-        var providers: [RulesViewModel.RuleProvider]
-        var filteredProviders: [String: [RulesViewModel.RuleProvider]]
-        var sections: [String]
-        let onRefresh: (RulesViewModel.RuleProvider) -> Void
-        
-        init(providers: [RulesViewModel.RuleProvider],
-             filteredProviders: [String: [RulesViewModel.RuleProvider]],
-             sections: [String],
-             onRefresh: @escaping (RulesViewModel.RuleProvider) -> Void) {
-            self.providers = providers
-            self.filteredProviders = filteredProviders
-            self.sections = sections
-            self.onRefresh = onRefresh
-        }
-        
-        func numberOfSections(in tableView: UITableView) -> Int {
-            return sections.count
-        }
-        
-        func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-            let sectionKey = sections[section]
-            return filteredProviders[sectionKey]?.count ?? 0
-        }
-        
-        func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-            let cell = tableView.dequeueReusableCell(withIdentifier: "ProviderCell", for: indexPath) as! ProviderCell
-            let sectionKey = sections[indexPath.section]
-            if let providers = filteredProviders[sectionKey] {
-                let provider = providers[indexPath.row]
-                cell.configure(with: provider, onRefresh: { [weak self] in
-                    self?.onRefresh(provider)
-                })
-            }
-            return cell
-        }
-        
-        func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-            return nil
-        }
-    }
-}
-
-// 修改 ProviderCell
-class ProviderCell: UITableViewCell {
-    private let nameLabel = UILabel()
-    private let countLabel = UILabel()
-    private let typeLabel = UILabel()
-    private let behaviorLabel = UILabel()
-    private let timeLabel = UILabel()
-    private let refreshButton = UIButton()
-    
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        // 禁用选择效果
-        selectionStyle = .none
-        setupUI()
-    }
-    
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    private func setupUI() {
-        let mainStack = UIStackView(arrangedSubviews: [
-            createTopRow(),
-            createMiddleRow(),
-            createBottomRow()
-        ])
-        mainStack.axis = .vertical
-        mainStack.spacing = 6  // 减小间距
-        
-        contentView.addSubview(mainStack)
-        mainStack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            mainStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            mainStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            mainStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            mainStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10)
-        ])
-        
-        // 调整字体大小
-        nameLabel.font = .systemFont(ofSize: 15, weight: .medium)  // 减小主标题大小
-        countLabel.font = .systemFont(ofSize: 13)
-        typeLabel.font = .systemFont(ofSize: 11)  // 减小标签字体
-        behaviorLabel.font = .systemFont(ofSize: 11)
-        timeLabel.font = .systemFont(ofSize: 11)
-        
-        // 设置标签样式
-        countLabel.textColor = .secondaryLabel
-        typeLabel.textColor = .white
-        behaviorLabel.textColor = .white
-        timeLabel.textColor = .tertiaryLabel
-        
-        // 设置标签背景
-        typeLabel.backgroundColor = .systemBlue.withAlphaComponent(0.8)  // 稍微透明一点
-        behaviorLabel.backgroundColor = .systemGreen.withAlphaComponent(0.8)
-        
-        // 圆角和内边距
-        [typeLabel, behaviorLabel].forEach { label in
-            label.layer.cornerRadius = 3  // 减小圆角
-            label.layer.masksToBounds = true
-            label.textAlignment = .center
-            label.adjustsFontSizeToFitWidth = true
-            label.minimumScaleFactor = 0.8
-            
-            // 减小内边距
-            label.layoutMargins = UIEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
-            label.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                label.heightAnchor.constraint(equalToConstant: 16)  // 减小高度
-            ])
-        }
-        
-        // 设置刷新按钮
-        refreshButton.setImage(UIImage(systemName: "arrow.clockwise"), for: .normal)
-        refreshButton.tintColor = .systemBlue
-        
-        // 移除右侧箭头
-        accessoryType = .none
-    }
-    
-    private func createTopRow() -> UIView {
-        let stack = UIStackView(arrangedSubviews: [nameLabel, countLabel])
-        stack.distribution = .equalSpacing
-        return stack
-    }
-    
-    private func createMiddleRow() -> UIView {
-        let stack = UIStackView(arrangedSubviews: [typeLabel, behaviorLabel])
-        stack.spacing = 8
-        stack.distribution = .fillProportionally
-        stack.alignment = .center
-        return stack
-    }
-    
-    private func createBottomRow() -> UIView {
-        let stack = UIStackView(arrangedSubviews: [timeLabel, refreshButton])
-        stack.distribution = .equalSpacing
-        return stack
-    }
-    
-    func configure(with provider: RulesViewModel.RuleProvider, onRefresh: @escaping () -> Void) {
-        nameLabel.text = provider.name
-        countLabel.text = "\(provider.ruleCount) 条规则"
-        typeLabel.text = provider.vehicleType
-        behaviorLabel.text = provider.behavior
-        timeLabel.text = "更新于 " + provider.formattedUpdateTime
-        
-        // 根据刷新状态更新按钮状态
-        refreshButton.isEnabled = !provider.isRefreshing
-        if provider.isRefreshing {
-            // 创建旋转动画
-            let rotation = CABasicAnimation(keyPath: "transform.rotation")
-            rotation.fromValue = 0
-            rotation.toValue = 2 * Double.pi
-            rotation.duration = 1
-            rotation.repeatCount = .infinity
-            refreshButton.layer.add(rotation, forKey: "rotation")
-        } else {
-            refreshButton.layer.removeAnimation(forKey: "rotation")
-        }
-        
-        // 移除之前的所有动作
-        refreshButton.removeTarget(nil, action: nil, for: .allEvents)
-        refreshButton.addAction(UIAction { _ in
-            onRefresh()
-        }, for: .touchUpInside)
-    }
-}
 
 // 添加 LazyView 来优化视图加载
 struct LazyView<Content: View>: View {
@@ -557,6 +172,613 @@ struct LazyView<Content: View>: View {
     
     var body: Content {
         build()
+    }
+}
+
+// MARK: - 现代化UI组件
+
+// 现代化搜索栏
+struct ModernSearchBar: View {
+    @Binding var text: String
+    let placeholder: String
+    @FocusState private var isFocused: Bool
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: isFocused ? [Color.blue, Color.purple] : [Color.secondary, Color.secondary],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .animation(.easeInOut(duration: 0.2), value: isFocused)
+            
+            TextField(placeholder, text: $text)
+                .font(.system(.body, design: .rounded))
+                .focused($isFocused)
+                .textFieldStyle(PlainTextFieldStyle())
+            
+            if !text.isEmpty {
+                Button(action: {
+                    text = ""
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(
+                            isFocused ?
+                                LinearGradient(
+                                    colors: [Color.blue.opacity(0.5), Color.purple.opacity(0.5)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ) :
+                                LinearGradient(
+                                    colors: [Color.clear, Color.clear],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                            lineWidth: 1.5
+                        )
+                )
+                .shadow(color: Color.black.opacity(isFocused ? 0.1 : 0.05), radius: isFocused ? 8 : 4, x: 0, y: 2)
+        )
+        .animation(.easeInOut(duration: 0.2), value: isFocused)
+        .animation(.easeInOut(duration: 0.2), value: text.isEmpty)
+    }
+}
+
+// 精美的空状态视图
+struct ModernEmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue.opacity(0.1), Color.purple.opacity(0.1)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 120, height: 120)
+                
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.blue, Color.purple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            
+            VStack(spacing: 8) {
+                Text("暂无规则订阅")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                
+                Text("当前控制器没有配置规则订阅源")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+}
+
+// 现代化规则列表
+struct ModernRulesListView: View {
+    let rules: [RulesViewModel.Rule]
+    let searchText: String
+    
+    var body: some View {
+        Group {
+            if rules.isEmpty {
+                RulesEmptyStateView()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(Array(rules.enumerated()), id: \.element.id) { index, rule in
+                            ModernRuleCard(rule: rule)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .move(edge: .leading).combined(with: .opacity)
+                                ))
+                                .animation(
+                                    .spring(response: 0.5, dampingFraction: 0.8)
+                                        .delay(Double(index % 20) * 0.02), // 限制动画延迟
+                                    value: rules.count
+                                )
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+                .background(Color(uiColor: .systemGroupedBackground))
+            }
+        }
+    }
+}
+
+// 规则专用空状态视图
+struct RulesEmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.green.opacity(0.1), Color.blue.opacity(0.1)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 120, height: 120)
+                
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 48, weight: .light))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.green, Color.blue],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            
+            VStack(spacing: 8) {
+                Text("暂无规则数据")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.primary)
+                
+                Text("当前控制器没有配置规则")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+}
+
+// 精美的规则卡片
+struct ModernRuleCard: View {
+    let rule: RulesViewModel.Rule
+    @State private var isPressed = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                // 左侧主体内容
+                VStack(alignment: .leading, spacing: 6) {
+                    // 主要内容：规则内容
+                    Text(rule.payload)
+                        .font(.system(.subheadline, design: .rounded))
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    // 底部信息行
+                    HStack(spacing: 4) {
+                        // 箭头和代理
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        
+                        Text(rule.proxy)
+                            .font(.system(.caption2, design: .rounded))
+                            .fontWeight(.medium)
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                        
+                        Spacer()
+                    }
+                }
+                
+                // 右侧规则类型标签
+                EmbossedRuleTypeTag(type: rule.type)
+            }
+            .padding(12)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: isPressed ? 
+                                    [Color.green.opacity(0.3), Color.blue.opacity(0.3)] :
+                                    [Color.primary.opacity(0.05), Color.primary.opacity(0.05)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: isPressed ? 1.0 : 0.5
+                        )
+                )
+                .shadow(
+                    color: Color.black.opacity(isPressed ? 0.06 : 0.03),
+                    radius: isPressed ? 8 : 4,
+                    x: 0,
+                    y: isPressed ? 3 : 1
+                )
+        )
+        .scaleEffect(isPressed ? 0.98 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPressed)
+        .onTapGesture {
+            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+            impactFeedback.impactOccurred()
+            
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                isPressed = true
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                    isPressed = false
+                }
+            }
+        }
+    }
+}
+
+// 浮雕刻印效果的规则类型标签
+struct EmbossedRuleTypeTag: View {
+    let type: String
+    @State private var isVisible = false
+    
+    var body: some View {
+        Text(type)
+            .font(.system(.callout, design: .rounded))
+            .fontWeight(.bold)
+            .foregroundStyle(.secondary.opacity(0.6))
+            .scaleEffect(isVisible ? 1.0 : 0.9)
+            .opacity(isVisible ? 1.0 : 0.0)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.15), value: isVisible)
+            .onAppear {
+                isVisible = true
+            }
+    }
+}
+
+// 规则类型标签（保留原版本以备使用）
+struct ModernRuleTypeTag: View {
+    let type: String
+    @State private var isVisible = false
+    
+    private var tagColor: Color {
+        switch type.lowercased() {
+        case "domain", "domain-suffix", "domain-keyword":
+            return .blue
+        case "ip-cidr", "ip-cidr6":
+            return .green
+        case "geoip":
+            return .orange
+        case "process-name":
+            return .purple
+        case "final":
+            return .red
+        default:
+            return .gray
+        }
+    }
+    
+    var body: some View {
+        Text(type)
+            .font(.system(.caption2, design: .rounded))
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [tagColor, tagColor.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(tagColor.opacity(0.3), lineWidth: 0.5)
+                    )
+                    .shadow(color: tagColor.opacity(0.3), radius: 1, x: 0, y: 0.5)
+            )
+            .scaleEffect(isVisible ? 1.0 : 0.8)
+            .opacity(isVisible ? 1.0 : 0.0)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.05), value: isVisible)
+            .onAppear {
+                isVisible = true
+            }
+    }
+}
+
+// 现代化规则订阅列表
+struct ModernProvidersListView: View {
+    let providers: [RulesViewModel.RuleProvider]
+    let searchText: String
+    let onRefresh: (RulesViewModel.RuleProvider) -> Void
+    
+    private var filteredProviders: [RulesViewModel.RuleProvider] {
+        searchText.isEmpty ? providers :
+            providers.filter { provider in
+                provider.name.localizedCaseInsensitiveContains(searchText) ||
+                provider.behavior.localizedCaseInsensitiveContains(searchText) ||
+                provider.vehicleType.localizedCaseInsensitiveContains(searchText)
+            }
+    }
+    
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(Array(filteredProviders.enumerated()), id: \.element.id) { index, provider in
+                    ModernProviderCard(provider: provider, onRefresh: onRefresh)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        ))
+                        .animation(
+                            .spring(response: 0.6, dampingFraction: 0.8)
+                                .delay(Double(index) * 0.1),
+                            value: filteredProviders.count
+                        )
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+}
+
+// 精美的订阅源卡片
+struct ModernProviderCard: View {
+    let provider: RulesViewModel.RuleProvider
+    let onRefresh: (RulesViewModel.RuleProvider) -> Void
+    @State private var isPressed = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // 主要内容区域
+            VStack(alignment: .leading, spacing: 8) {
+                // 标题行
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(provider.name)
+                            .font(.system(.subheadline, design: .rounded))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        
+                        HStack(spacing: 3) {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            
+                            Text("\(provider.ruleCount) 条规则")
+                                .font(.system(.caption2, design: .rounded))
+                                .fontWeight(.medium)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    ModernRefreshButton(
+                        isRefreshing: provider.isRefreshing,
+                        action: { onRefresh(provider) }
+                    )
+                }
+                
+                // 标签行
+                HStack(spacing: 6) {
+                    ModernTag(text: provider.vehicleType, color: .blue)
+                    ModernTag(text: provider.behavior, color: .green)
+                    Spacer()
+                }
+                
+                // 更新时间行
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.blue.opacity(0.6), Color.purple.opacity(0.6)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    
+                    Text("更新于 \(provider.formattedUpdateTime)")
+                        .font(.system(size: 10, design: .rounded))
+                        .fontWeight(.medium)
+                        .foregroundStyle(.tertiary)
+                    
+                    Spacer()
+                }
+            }
+            .padding(12)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                .overlay(
+                    // 渐变边框效果
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: isPressed ? 
+                                    [Color.blue.opacity(0.3), Color.purple.opacity(0.3)] :
+                                    [Color.primary.opacity(0.06), Color.primary.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: isPressed ? 1.5 : 0.5
+                        )
+                )
+                .shadow(
+                    color: Color.black.opacity(isPressed ? 0.08 : 0.04),
+                    radius: isPressed ? 12 : 8,
+                    x: 0,
+                    y: isPressed ? 4 : 2
+                )
+        )
+        .scaleEffect(isPressed ? 0.98 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isPressed)
+        .onTapGesture {
+            // 添加轻微的触觉反馈
+            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+            impactFeedback.impactOccurred()
+            
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                isPressed = true
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                    isPressed = false
+                }
+            }
+        }
+    }
+}
+
+// 现代化标签组件
+struct ModernTag: View {
+    let text: String
+    let color: Color
+    @State private var isVisible = false
+    
+    var body: some View {
+        Text(text)
+            .font(.system(.caption2, design: .rounded))
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [color, color.opacity(0.7)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(
+                        Capsule()
+                            .stroke(color.opacity(0.3), lineWidth: 0.5)
+                    )
+                    .shadow(color: color.opacity(0.3), radius: 2, x: 0, y: 1)
+            )
+            .scaleEffect(isVisible ? 1.0 : 0.8)
+            .opacity(isVisible ? 1.0 : 0.0)
+            .animation(.spring(response: 0.4, dampingFraction: 0.8).delay(0.1), value: isVisible)
+            .onAppear {
+                isVisible = true
+            }
+    }
+}
+
+// 现代化刷新按钮
+struct ModernRefreshButton: View {
+    let isRefreshing: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color.blue.opacity(0.1))
+                    .frame(width: 28, height: 28)
+                
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.blue)
+                    .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                    .animation(
+                        isRefreshing ?
+                            Animation.linear(duration: 1).repeatForever(autoreverses: false) :
+                            .default,
+                        value: isRefreshing
+                    )
+            }
+        }
+        .disabled(isRefreshing)
+        .opacity(isRefreshing ? 0.6 : 1.0)
+        .scaleEffect(isRefreshing ? 0.95 : 1.0)
+        .animation(.easeInOut(duration: 0.2), value: isRefreshing)
+    }
+}
+
+// 全部更新按钮
+struct ModernRefreshAllButton: View {
+    let isRefreshing: Bool
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 44, height: 44)
+                    .shadow(color: Color.black.opacity(0.1), radius: 6, x: 0, y: 3)
+                
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.blue.opacity(0.3), Color.purple.opacity(0.3)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                    .frame(width: 44, height: 44)
+                
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: isRefreshing ? [Color.secondary] : [Color.blue, Color.purple],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                    .animation(
+                        isRefreshing ?
+                            Animation.linear(duration: 1.2).repeatForever(autoreverses: false) :
+                            .spring(response: 0.4, dampingFraction: 0.8),
+                        value: isRefreshing
+                    )
+            }
+        }
+        .disabled(isRefreshing)
+        .scaleEffect(isRefreshing ? 0.95 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isRefreshing)
     }
 }
 

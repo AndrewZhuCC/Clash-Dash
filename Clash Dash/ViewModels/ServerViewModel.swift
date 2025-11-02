@@ -81,6 +81,16 @@ struct FSStatResult: Codable {
     let modestr: String
 }
 
+struct ServerCheckSummary {
+    let name: String
+    let address: String
+    let success: Bool
+    let typeText: String
+    let codeText: String
+    let detailText: String
+    let durationSeconds: Double
+}
+
 @MainActor
 class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessionTaskDelegate {
     @Published private(set) var servers: [ClashServer] = []
@@ -122,6 +132,73 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
     
     func setBingingManager(_ manager: WiFiBindingManager) {
         self.bindingManager = manager
+    }
+    
+    // 描述一组服务器ID为可读字符串
+    private func describeServers(by ids: [String]) -> String {
+        if ids.isEmpty { return "无" }
+        let idSet = Set(ids)
+        let matched = servers.filter { idSet.contains($0.id.uuidString) }
+        if matched.isEmpty { return ids.joined(separator: ", ") }
+        return matched.map { server in
+            let address: String
+            if server.source == .clashController {
+                address = "\(server.url):\(server.port)"
+            } else {
+                let host = server.openWRTUrl ?? server.url
+                let port = server.openWRTPort ?? server.port
+                address = "\(host):\(port)"
+            }
+            return "\(server.displayName)[\(address)]"
+        }.joined(separator: ", ")
+    }
+    
+    // 输出一次 Wi‑Fi 绑定概要日志，避免刷屏
+    func logWiFiBindingSummary(currentWiFiSSID: String) {
+        let enabled = UserDefaults.standard.bool(forKey: "enableWiFiBinding")
+        logger.info("[WiFi绑定] 功能: \(enabled ? "已启用" : "未启用")")
+        guard enabled else { return }
+        
+        let cachedSSID = UserDefaults.standard.string(forKey: "current_ssid") ?? ""
+        let rawSSID = currentWiFiSSID.isEmpty ? cachedSSID : currentWiFiSSID
+        let ssid = rawSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if ssid.isEmpty {
+            logger.info("[WiFi绑定] Wi‑Fi: 未连接")
+            // 未连接时展示默认控制器
+            let defaultsIds: Set<String> = bindingManager?.defaultServerIds ?? loadDefaultServerIdsFromDefaults()
+            logger.info("[WiFi绑定] 绑定控制器: \(describeServers(by: Array(defaultsIds)))")
+            return
+        }
+        
+        logger.info("[WiFi绑定] Wi‑Fi: 已连接（\(ssid)）")
+        let bindingsSource: [WiFiBinding] = bindingManager?.bindings ?? loadBindingsFromDefaults()
+        if let binding = bindingsSource.first(where: { $0.ssid == ssid })
+            ?? bindingsSource.first(where: { $0.ssid.trimmingCharacters(in: .whitespacesAndNewlines) == ssid })
+            ?? bindingsSource.first(where: { $0.ssid.lowercased() == ssid.lowercased() }) {
+            logger.info("[WiFi绑定] 绑定控制器: \(describeServers(by: binding.serverIds))")
+        } else {
+            // 未找到绑定时展示默认控制器
+            let defaultsIds: Set<String> = bindingManager?.defaultServerIds ?? loadDefaultServerIdsFromDefaults()
+            logger.info("绑定控制器: \(describeServers(by: Array(defaultsIds)))")
+        }
+    }
+    
+    // 从 UserDefaults 加载 Wi-Fi 绑定（当 bindingManager 尚未注入时作为回退）
+    private func loadBindingsFromDefaults() -> [WiFiBinding] {
+        if let data = UserDefaults.standard.data(forKey: "wifi_bindings"),
+           let bindings = try? JSONDecoder().decode([WiFiBinding].self, from: data) {
+            return bindings
+        }
+        return []
+    }
+    
+    // 从 UserDefaults 加载默认控制器 ID 列表（当 bindingManager 尚未注入时作为回退）
+    private func loadDefaultServerIdsFromDefaults() -> Set<String> {
+        if let array = UserDefaults.standard.stringArray(forKey: "default_servers") {
+            return Set(array)
+        }
+        return []
     }
     
     private func determineServerType(from response: VersionResponse) -> ClashServer.ServerType {
@@ -189,7 +266,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         let messages = [
-            "🔐 收到证书验证请求",
+            "收到证书验证请求",
             "认证方法: \(challenge.protectionSpace.authenticationMethod)",
             "主机: \(challenge.protectionSpace.host)",
             "端口: \(challenge.protectionSpace.port)",
@@ -208,17 +285,17 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 let credential = URLCredential(trust: serverTrust)
                 completionHandler(.useCredential, credential)
                 Task { @MainActor in
-                    logger.debug("✅ 已接受服务器证书（包括自签证书）")
+                    logger.debug("已接受服务器证书（包括自签证书）")
                 }
             } else {
                 Task { @MainActor in
-                    logger.debug("⚠️ 无法获取服务器证书")
+                    logger.debug("无法获取服务器证书")
                 }
                 completionHandler(.performDefaultHandling, nil)
             }
         } else {
             Task { @MainActor in
-                logger.debug("❌ 默认处理证书验证")
+                logger.debug("默认处理证书验证")
             }
             completionHandler(.performDefaultHandling, nil)
         }
@@ -226,30 +303,51 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
     
     @MainActor
     func checkAllServersStatus() async {
+        var summaries: [ServerCheckSummary] = []
         for server in servers {
-            await checkServerStatus(server)
+            let summary = await checkServerStatusAndSummarize(server)
+            summaries.append(summary)
+        }
+        if !summaries.isEmpty {
+            let blocks = summaries.map { s -> String in
+                let status = s.success ? "成功" : "失败"
+                let typeLine = s.typeText.isEmpty ? "未知" : s.typeText
+                return "\(s.name)（\(status)）\n- 类型：\(typeLine)\n- 地址：\(s.address)\n- 响应代码：\(s.codeText) - \(s.detailText)\n- 耗时：\(String(format: "%.2f", s.durationSeconds))s"
+            }.joined(separator: "\n\n")
+            logger.info("控制器检查结果:\n\n\(blocks)")
         }
     }
     
     @MainActor
     func refreshServerStatus(for server: ClashServer) async throws {
-        await checkServerStatus(server)
+        let s = await checkServerStatusAndSummarize(server)
+        let status = s.success ? "成功" : "失败"
+        let typeLine = s.typeText.isEmpty ? "未知" : s.typeText
+        let block = "\(s.name)（\(status)）\n- 类型：\(typeLine)\n- 地址：\(s.address)\n- 响应代码：\(s.codeText) - \(s.detailText)\n- 耗时：\(String(format: "%.2f", s.durationSeconds))s"
+        logger.info("控制器检查结果:\n\n\(block)")
     }
     
     @MainActor
-    private func checkServerStatus(_ server: ClashServer) async {
+    private func checkServerStatusAndSummarize(_ server: ClashServer) async -> ServerCheckSummary {
+        let address: String = {
+            if server.source == .clashController {
+                return "\(server.url):\(server.port)"
+            } else {
+                let host = server.openWRTUrl ?? server.url
+                let port = server.openWRTPort ?? server.port
+                return "\(host):\(port)"
+            }
+        }()
+        let startTime = Date()
+        let timeout = UserDefaults.standard.double(forKey: "serverStatusTimeout")
         guard var request = makeRequest(for: server, path: "/version") else {
             updateServerStatus(server, status: .error, message: "无效的请求")
-            return
+            return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "N/A", detailText: "无效的请求", durationSeconds: 0)
         }
-
-        // 使用 UserDefaults 获取超时设置
-        let timeout = UserDefaults.standard.double(forKey: "serverStatusTimeout")
-        request.timeoutInterval = timeout  // 使用设置的超时时间
+        request.timeoutInterval = timeout
         
         do {
             let session = makeURLSession(for: server)
-            
             let (data, response) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
                 let task = session.dataTask(with: request) { data, response, error in
                     if let error = error {
@@ -262,19 +360,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 }
                 task.resume()
             }
-            
+            let duration = Date().timeIntervalSince(startTime)
             guard let httpResponse = response as? HTTPURLResponse else {
                 updateServerStatus(server, status: .error, message: "无效的响应")
-                return
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "0", detailText: "无效的响应", durationSeconds: duration)
             }
-            
-            // 添加状态码日志
-            logger.debug("检查服务器状态响应码: \(httpResponse.statusCode)")
-            if let responseData = String(data: data, encoding: .utf8) {
-                logger.debug("响应内容: \(responseData)")
-            }
-            
-            switch httpResponse.statusCode {
+            let code = httpResponse.statusCode
+            switch code {
             case 200:
                 do {
                     let versionResponse = try JSONDecoder().decode(VersionResponse.self, from: data)
@@ -284,65 +376,71 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                     updatedServer.serverType = determineServerType(from: versionResponse)
                     updatedServer.errorMessage = nil
                     updateServer(updatedServer)
+                    let typeText: String = {
+                        switch updatedServer.serverType {
+                        case .meta: return "Meta"
+                        case .premium: return "Premium"
+                        case .singbox: return "Sing-Box"
+                        case .unknown: return "Unknown"
+                        default: return "Unknown"
+                        }
+                    }()
+                    return ServerCheckSummary(name: server.displayName, address: address, success: true, typeText: typeText, codeText: "\(code)", detailText: "OK(v\(versionResponse.version), \(typeText))", durationSeconds: duration)
                 } catch {
-                    if let versionDict = try? JSONDecoder().decode([String: String].self, from: data),
-                       let version = versionDict["version"] {
+                    if let versionDict = try? JSONDecoder().decode([String: String].self, from: data), let version = versionDict["version"] {
                         var updatedServer = server
                         updatedServer.status = .ok
                         updatedServer.version = version
                         updatedServer.errorMessage = nil
                         updateServer(updatedServer)
-                        logger.info("更新：\(server.url) 状态为 OK")
+                        return ServerCheckSummary(name: server.displayName, address: address, success: true, typeText: "", codeText: "\(code)", detailText: "OK(v\(version))", durationSeconds: duration)
                     } else {
-                        logger.error("解析响应失败: \(error)")
                         updateServerStatus(server, status: .error, message: "无效的响应格式")
-                        logger.error("服务器地址：\(server.url):\(server.port) ：无效的响应格式")
+                        return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(code)", detailText: "无效的响应格式", durationSeconds: duration)
                     }
                 }
             case 401:
-                // 添加更详细的认证信息日志
-                logger.debug("认证头信息: \(String(describing: request.allHTTPHeaderFields))")
                 updateServerStatus(server, status: .unauthorized, message: "认证失败，请检查密钥")
-                logger.warning("服务器地址：\(server.url):\(server.port) ：认证失败，请检查密钥")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "401", detailText: "认证失败，请检查密钥", durationSeconds: duration)
             case 404:
                 updateServerStatus(server, status: .error, message: "API 路径不存在")
-                logger.warning("服务器地址：\(server.url):\(server.port) ：API 路径不存在")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "404", detailText: "API 路径不存在", durationSeconds: duration)
             case 500...599:
-                updateServerStatus(server, status: .error, message: "服务器错误: \(httpResponse.statusCode)")
-                logger.error("服务器地址：\(server.url):\(server.port) ：服务器错误: \(httpResponse.statusCode)")
+                updateServerStatus(server, status: .error, message: "服务器错误: \(code)")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(code)", detailText: "服务器错误", durationSeconds: duration)
             default:
-                updateServerStatus(server, status: .error, message: "未知响应: \(httpResponse.statusCode)")
-                logger.warning("服务器地址：\(server.url):\(server.port) ：未知响应: \(httpResponse.statusCode)")
+                updateServerStatus(server, status: .error, message: "未知响应: \(code)")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(code)", detailText: "未知响应", durationSeconds: duration)
             }
         } catch let urlError as URLError {
-            // print("🚫 URLError: \(urlError.localizedDescription)")
-            logger.debug("服务器地址：\(server.url):\(server.port) ：URLError: \(urlError.localizedDescription)")
+            let duration = Date().timeIntervalSince(startTime)
             switch urlError.code {
             case .timedOut:
-                logger.warning("请求超时，请检查控制器是否可访问，或者在全局设置中调整最大超时时间。")
                 updateServerStatus(server, status: .error, message: "请求超时")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "请求超时", durationSeconds: duration)
             case .cancelled:
-                logger.warning("请求被取消")
                 updateServerStatus(server, status: .error, message: "请求被取消")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "请求被取消", durationSeconds: duration)
             case .secureConnectionFailed:
-                logger.warning("SSL/TLS 连接失败")
                 updateServerStatus(server, status: .error, message: "SSL/TLS 连接失败")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "SSL/TLS 连接失败", durationSeconds: duration)
             case .serverCertificateUntrusted:
-                logger.warning("证书不信任")
                 updateServerStatus(server, status: .error, message: "证书不信任")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "证书不信任", durationSeconds: duration)
             case .cannotConnectToHost:
-                logger.warning("无法连接到服务器")
                 updateServerStatus(server, status: .error, message: "无法连接到服务器")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "无法连接到服务器", durationSeconds: duration)
             case .notConnectedToInternet:
-                logger.warning("网络未连接")
                 updateServerStatus(server, status: .error, message: "网络未连接")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "网络未连接", durationSeconds: duration)
             default:
-                logger.warning("网络错误")
                 updateServerStatus(server, status: .error, message: "网络错误")
+                return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "\(urlError.code.rawValue)", detailText: "网络错误", durationSeconds: duration)
             }
         } catch {
-            logger.error("未知错误: \(error)")
+            let duration = Date().timeIntervalSince(startTime)
             updateServerStatus(server, status: .error, message: "未知错误")
+            return ServerCheckSummary(name: server.displayName, address: address, success: false, typeText: "", codeText: "N/A", detailText: "未知错误", durationSeconds: duration)
         }
     }
     
@@ -409,8 +507,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         if let bindingManager = bindingManager {
             bindingManager.updateDefaultServers(bindingManager.defaultServerIds.union([server.id.uuidString]))
         }
-        Task {
-            await checkServerStatus(server)
+        Task { [weak self] in
+            guard let self = self else { return }
+            let s = await self.checkServerStatusAndSummarize(server)
+            let status = s.success ? "成功" : "失败"
+            let typeLine = s.typeText.isEmpty ? "未知" : s.typeText
+            let block = "\(s.name)（\(status)）\n- 类型：\(typeLine)\n- 地址：\(s.address)\n- 响应代码：\(s.codeText) - \(s.detailText)\n- 耗时：\(String(format: "%.2f", s.durationSeconds))s"
+            self.logger.info("控制器检查结果:\n\n\(block)")
         }
     }
     
@@ -461,20 +564,53 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 检查是否因为 WiFi 绑定而隐藏
         let enableWiFiBinding = UserDefaults.standard.bool(forKey: "enableWiFiBinding")
         if enableWiFiBinding {
-            guard let bindingManager = bindingManager else {
-                return false // 如果 bindingManager 未设置，不隐藏任何服务器
+            // 优先使用注入的 bindingManager，否则回退到 UserDefaults
+            let bindingsSource: [WiFiBinding]
+            let defaultIdsSource: Set<String>
+            if let manager = bindingManager {
+                bindingsSource = manager.bindings
+                defaultIdsSource = manager.defaultServerIds
+            } else {
+                bindingsSource = loadBindingsFromDefaults()
+                defaultIdsSource = loadDefaultServerIdsFromDefaults()
+                if UserDefaults.standard.bool(forKey: "wifiBindingVerboseLog") {
+                    logger.debug("[WiFi绑定] bindingManager 未设置，使用 UserDefaults 回退数据：绑定=\(bindingsSource.count)，默认=\(defaultIdsSource.count)")
+                }
             }
             
-            if !currentWiFiSSID.isEmpty {
+            // 如果未传入/获取不到当前 SSID，回退到缓存的 SSID
+            let cachedSSID = UserDefaults.standard.string(forKey: "current_ssid") ?? ""
+            let rawSSID = currentWiFiSSID.isEmpty ? cachedSSID : currentWiFiSSID
+            let trimmedSSID = rawSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowercasedSSID = trimmedSSID.lowercased()
+            
+            if !trimmedSSID.isEmpty {
                 // 如果连接了 WiFi，检查是否有绑定
-                if let binding = bindingManager.bindings.first(where: { $0.ssid == currentWiFiSSID }) {
-                    return !binding.serverIds.contains(server.id.uuidString)
+                let binding = bindingsSource.first(where: { $0.ssid == trimmedSSID })
+                    ?? bindingsSource.first(where: { $0.ssid.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedSSID })
+                    ?? bindingsSource.first(where: { $0.ssid.lowercased() == lowercasedSSID })
+                
+                if let binding = binding {
+                    let contains = binding.serverIds.contains(server.id.uuidString)
+                    if UserDefaults.standard.bool(forKey: "wifiBindingVerboseLog") {
+                        logger.debug("[WiFi绑定] 使用SSID=\(trimmedSSID) 命中绑定 SSID=\(binding.ssid)，控制器是否包含=\(contains)，当前控制器=\(server.displayName)[\(server.url):\(server.port)]")
+                    }
+                    return !contains
                 }
+                
                 // 如果没有找到绑定，显示默认服务器
-                return !bindingManager.defaultServerIds.contains(server.id.uuidString)
+                let inDefault = defaultIdsSource.contains(server.id.uuidString)
+                if UserDefaults.standard.bool(forKey: "wifiBindingVerboseLog") {
+                    logger.debug("[WiFi绑定] 使用SSID=\(trimmedSSID) 未找到匹配绑定，使用默认控制器列表，是否在默认=\(inDefault)，当前控制器=\(server.displayName)[\(server.url):\(server.port)]")
+                }
+                return !inDefault
             } else {
                 // 如果没有连接 WiFi，显示默认服务器
-                return !bindingManager.defaultServerIds.contains(server.id.uuidString)
+                let inDefault = defaultIdsSource.contains(server.id.uuidString)
+                if UserDefaults.standard.bool(forKey: "wifiBindingVerboseLog") {
+                    logger.debug("[WiFi绑定] 当前未连接 Wi-Fi（或无法获取SSID），使用默认控制器列表，是否在默认=\(inDefault)，当前控制器=\(server.displayName)[\(server.url):\(server.port)]")
+                }
+                return !inDefault
             }
         }
         
@@ -533,8 +669,8 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         
         // 1. 使用 JSON-RPC 登录
         guard let loginURL = URL(string: "\(baseURL)/cgi-bin/luci/rpc/auth") else {
-            // print("❌ 登录 URL 无效")
-            logger.error("❌ 登录 URL 无效")
+            // print("登录 URL 无效")
+            logger.error("登录 URL 无效")
             throw NetworkError.invalidURL
         }
         
@@ -577,15 +713,15 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             }
             
             guard let httpResponse = loginResponse as? HTTPURLResponse else {
-                // print("❌ 无效的响应类型")
-                logger.error("❌ 无效的响应类型")
+                // print("无效的响应类型")
+                logger.error("无效的响应类型")
                 throw NetworkError.invalidResponse(message: "无效的响应类型")
             }
             
-            print("📥 登录响应状态码: \(httpResponse.statusCode)")
+            print("登录响应状态码: \(httpResponse.statusCode)")
             if let responseStr = String(data: loginData, encoding: .utf8) {
-                // print("📥 JSON-RPC 登录响应: \(responseStr)")
-                logger.info("📥 JSON-RPC 登录响应: \(responseStr)")
+                // print("JSON-RPC 登录响应: \(responseStr)")
+                logger.info("JSON-RPC 登录响应: \(responseStr)")
             }
             
             switch httpResponse.statusCode {
@@ -595,35 +731,35 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 do {
                     authResponse = try JSONDecoder().decode(OpenWRTAuthResponse.self, from: loginData)
                 } catch {
-                    // print("❌ JSON-RPC 响应解析失败")
-                    logger.error("❌ JSON-RPC 响应解析失败")
+                    // print("JSON-RPC 响应解析失败")
+                    logger.error("JSON-RPC 响应解析失败")
                     throw NetworkError.invalidResponse(message: "验证 OpenWRT 信息失败，请确认输入的信息是否正确")
                 }
                 
                 guard let token = authResponse.result, !token.isEmpty else {
                     if authResponse.result == nil && authResponse.error == nil {
-                        // print("❌ 认证响应异常: result 和 error 都为 nil")
+                        // print("认证响应异常: result 和 error 都为 nil")
                         if let responseStr = String(data: loginData, encoding: .utf8) {
-                            // print("📥 原始响应内容: \(responseStr)")
-                            logger.info("📥 原始响应内容: \(responseStr)")
+                            // print("原始响应内容: \(responseStr)")
+                            logger.info("原始响应内容: \(responseStr)")
                             throw NetworkError.unauthorized(message: "认证失败: 请检查用户名或密码是否正确") 
                         } else {
-                            logger.error("❌ 认证响应异常: result 和 error 都为 nil")
+                            logger.error("认证响应异常: result 和 error 都为 nil")
                             throw NetworkError.unauthorized(message: "认证失败: 响应内容为空")
                         }
                     }
                     if let error = authResponse.error {
-                        // print("❌ JSON-RPC 错误: \(error)")
-                        logger.error("❌ JSON-RPC 错误: \(error)")
+                        // print("JSON-RPC 错误: \(error)")
+                        logger.error("JSON-RPC 错误: \(error)")
                         throw NetworkError.invalidResponse(message: "JSON-RPC 获取错误，请确认 OpenWRT 信息是否正确")
                     }
-                    // print("❌ 无效的响应结果")
-                    logger.error("❌ 无效的响应结果")
+                    // print("无效的响应结果")
+                    logger.error("无效的响应结果")
                     throw NetworkError.invalidResponse(message: "无效的响应结果")
                 }
                 
-                // print("🔑 获取认证令牌: \(token)")
-                logger.info("🔑 获取到认证令牌: \(token)")
+                // print("获取认证令牌: \(token)")
+                logger.info("获取到认证令牌: \(token)")
                 
                 // 根据不同的 LuCI 软件包类型调用不同的 API
                 switch server.luciPackage {
@@ -635,7 +771,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                     var statusRequest = URLRequest(url: url)
                     statusRequest.httpMethod = "POST"
                     statusRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    statusRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                    statusRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                     
                     let statusCommand: [String: Any] = [
                         "method": "exec",
@@ -661,7 +797,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                     var statusRequest = URLRequest(url: url)
                     statusRequest.httpMethod = "POST"
                     statusRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    statusRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                    statusRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                     
                     let statusCommand: [String: Any] = [
                         "method": "exec",
@@ -681,8 +817,8 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 }
                 
             case 404:
-                print("❌ OpenWRT 缺少必要的依赖")
-                logger.error("❌ OpenWRT 缺少必要的依赖或信息错误")
+                print("OpenWRT 缺少必要的依赖")
+                logger.error("OpenWRT 缺少必要的依赖或信息错误")
                 throw NetworkError.missingDependencies("""
                     请求 404 错误
 
@@ -695,7 +831,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                     """)
                 
             default:
-                // print("❌ 登录失败：状态码 \(httpResponse.statusCode)")
+                // print("登录失败：状态码 \(httpResponse.statusCode)")
                 throw NetworkError.serverError(httpResponse.statusCode)
             }
         } catch let urlError as URLError {
@@ -760,7 +896,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
 //        newRequest request: URLRequest,
 //        completionHandler: @escaping (URLRequest?) -> Void
 //    ) {
-//        print("🔄 收到重定向请求")
+//        print("收到重定向请求")
 //        print("从: \(task.originalRequest?.url?.absoluteString ?? "unknown")")
 //        print("到: \(request.url?.absoluteString ?? "unknown")")
 //        print("状态码: \(response.statusCode)")
@@ -780,16 +916,16 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 1. 获取认证 token
         guard let username = server.openWRTUsername,
               let password = server.openWRTPassword else {
-            print("❌ 未找到认证信息")
-            logger.error("❌ 未找到认证信息")
+            print("未找到认证信息")
+            logger.error("未找到认证信息")
             throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
         }
         
-        // print("🔑 获取认证令牌...")
-        // logger.log("🔑 获取认证令牌...")
+        // print("获取认证令牌...")
+        // logger.log("获取认证令牌...")
         let token = try await getAuthToken(server, username: username, password: password)
-        // print("✅ 获取令牌成功: \(token)")
-        // logger.log("✅ 获取令牌成功: \(token)")
+        // print("获取令牌成功: \(token)")
+        // logger.log("获取令牌成功: \(token)")
         
         let session = makeURLSession(for: server)
         
@@ -801,7 +937,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var fsRequest = URLRequest(url: fsURL)
         fsRequest.httpMethod = "POST"
         fsRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        fsRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        fsRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let fsCommand: [String: Any] = [
             "method": "glob",
@@ -827,7 +963,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var sysRequest = URLRequest(url: sysURL)
         sysRequest.httpMethod = "POST"
         sysRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        sysRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        sysRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let sysCommand: [String: Any] = [
             "method": "exec",
@@ -855,7 +991,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             var statRequest = URLRequest(url: fsURL)
             statRequest.httpMethod = "POST"
             statRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            statRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            statRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let statCommand: [String: Any] = [
                 "method": "stat",
@@ -868,23 +1004,31 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
 
             logger.debug("配置文件元数据: \(statResponse.result)")
             
-            // 检查配置文件语法
-            // print("🔍 检查配置文件语法: \(fileName)")
+            // 检查配置文件语法（使用本地 Yams 验证）
             logger.debug("🔍 检查配置文件语法: \(fileName)")
-            var checkRequest = URLRequest(url: sysURL)
-            checkRequest.httpMethod = "POST"
-            checkRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            checkRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
-            
-            let checkCommand: [String: Any] = [
-                "method": "exec",
-                "params": ["ruby -ryaml -rYAML -I \"/usr/share/openclash\" -E UTF-8 -e \"puts YAML.load_file('\(filePath)')\" 2>/dev/null"]
-            ]
-            checkRequest.httpBody = try JSONSerialization.data(withJSONObject: checkCommand)
-            
-            let (checkData, _) = try await session.data(for: checkRequest)
-            let checkResult = try JSONDecoder().decode(ListResponse.self, from: checkData)
-            let check: OpenClashConfig.ConfigCheck = checkResult.result != "false\n" && !checkResult.result.isEmpty ? .normal : .abnormal
+            let check: OpenClashConfig.ConfigCheck
+            do {
+                // 获取配置文件内容进行本地验证
+                let configContent = try await fetchConfigContent(
+                    server,
+                    configFilename: fileName,
+                    packageName: "openclash",
+                    isSubscription: false
+                )
+                
+                // 使用 Yams 进行本地验证
+                let validationResult = YAMLValidator.validateClashConfig(configContent)
+                check = validationResult.isValid ? .normal : .abnormal
+                
+                if !validationResult.isValid {
+                    logger.warning("配置文件语法错误 \(fileName): \(validationResult.error ?? "未知错误")")
+                } else if let warning = validationResult.error {
+                    logger.info("配置文件警告 \(fileName): \(warning)")
+                }
+            } catch {
+                logger.error("验证配置文件 \(fileName) 时出错: \(error)")
+                check = .abnormal
+            }
             
             // 获取订阅信息
             // print("获取订阅信息: \(fileName)")
@@ -896,7 +1040,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             }
             
             var subRequest = URLRequest(url: subURL)
-            subRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            subRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let subscription: OpenClashConfig.SubscriptionInfo?
             do {
@@ -932,12 +1076,12 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             var updatedConfig = config
             updatedConfig.isSubscription = subscription?.subInfo != "No Sub Info Found"
             configs.append(updatedConfig)
-            // print("✅ 成功添加配置: \(fileName)")
-            logger.info("✅ 成功添加配置: \(fileName)")
+            // print("成功添加配置: \(fileName)")
+            logger.info("成功添加配置: \(fileName)")
         }
         
-        // print("✅ 完成配置列表获取，共 \(configs.count) 个配置")
-        logger.info("✅ 完成配置列表获取，共 \(configs.count) 个配置")
+        // print("完成配置列表获取，共 \(configs.count) 个配置")
+        logger.info("完成配置列表获取，共 \(configs.count) 个配置")
         return configs
     }
     
@@ -947,8 +1091,8 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             throw NetworkError.invalidURL
         }
         let baseURL = "\(scheme)://\(openWRTUrl):\(server.openWRTPort ?? "80")"
-        // print("🔄 开始切换配置: \(configFilename)")
-        logger.info("🔄 开始切换配置: \(configFilename)")
+        // print("开始切换配置: \(configFilename)")
+        logger.info("开始切换配置: \(configFilename)")
         // 获取认证 token
         guard let username = server.openWRTUsername,
               let password = server.openWRTPassword else {
@@ -967,7 +1111,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             var request = URLRequest(url: switchURL)
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             request.httpBody = "config_name=\(configFilename)".data(using: .utf8)
             
             let session = makeURLSession(for: server)
@@ -1000,7 +1144,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             // print("切换配置命令: \(switchCommand)")
 
             _ = try await makeUCIRequest(server, token: token, method: "sys", params: ["exec", [switchCommand]])
-            // print("📥 切换配置响应: \(switchRequest)")
+            // print("切换配置响应: \(switchRequest)")
 
         }
 
@@ -1085,7 +1229,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         // 根据包名和是否为订阅构建文件路径
         let configPath: String
@@ -1136,7 +1280,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         logger.info("📝 开始保存配置文件: \(configFilename)")
         guard let username = server.openWRTUsername,
               let password = server.openWRTPassword else {
-            logger.error("❌ 未找到认证信息")
+            logger.error("未找到认证信息")
             throw NetworkError.unauthorized(message: "未找到认证信息")
         }
         
@@ -1171,7 +1315,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var request = URLRequest(url: url)
         request.httpMethod = "POST" 
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let command: [String: Any] = [
             "method": "exec",
@@ -1183,12 +1327,12 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         let (_, response) = try await session.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse {
-            logger.info("📥 写入响应状态码: \(httpResponse.statusCode)")
+            logger.info("写入响应状态码: \(httpResponse.statusCode)")
         }
         
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
-            logger.error("❌ 写入失败")
+            logger.error("写入失败")
             throw NetworkError.serverError((response as? HTTPURLResponse)?.statusCode ?? 500)
         }
         
@@ -1203,7 +1347,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var statRequest = URLRequest(url: fsURL)
         statRequest.httpMethod = "POST"
         statRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        statRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        statRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let statCommand: [String: Any] = [
             "method": "stat",
@@ -1218,14 +1362,14 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         let fileDate = Date(timeIntervalSince1970: TimeInterval(statResponse.result.mtime))
         let timeDiff = Date().timeIntervalSince(fileDate)
         
-        logger.info("⏱ 文件修改时间差: \(timeDiff)秒")
+        logger.info("文件修改时间差: \(timeDiff)秒")
         
         if timeDiff < 0 || timeDiff > 5 {
-            logger.error("❌ 文件时间验证失败")
+            logger.error("文件时间验证失败")
             throw NetworkError.invalidResponse(message: "文件时间验证失败")
         }
         
-        logger.info("✅ 配置文件保存成功")
+        logger.info("配置文件保存成功")
     }
     
     func restartOpenClash(_ server: ClashServer, packageName: String, isSubscription: Bool) async throws -> AsyncThrowingStream<String, Error> {
@@ -1239,13 +1383,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
 
         guard let username = server.openWRTUsername,
             let password = server.openWRTPassword else {
-            // print("❌ 未找到认证信息")
+            // print("未找到认证信息")
             throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
         }
         
-        // print("🔑 获取认证令牌...")
+        // print("获取认证令牌...")
         let token = try await getAuthToken(server, username: username, password: password)
-        // print("✅ 获取令牌成功: \(token)")
+        // print("获取令牌成功: \(token)")
 
         if packageName == "openclash" {
             let scheme = server.openWRTUseSSL ? "https" : "http"
@@ -1258,13 +1402,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
 
             guard let username = server.openWRTUsername,
                 let password = server.openWRTPassword else {
-                // print("❌ 未找到认证信息")
+                // print("未找到认证信息")
                 throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
             }
             
-            // print("🔑 获取认证令牌...")
+            // print("获取认证令牌...")
             let token = try await getAuthToken(server, username: username, password: password)
-            // print("✅ 获取令牌成功: \(token)")
+            // print("获取令牌成功: \(token)")
             
             guard let restartURL = URL(string: "\(baseURL)/cgi-bin/luci/rpc/sys?auth=\(token)") else {
                 throw NetworkError.invalidURL
@@ -1273,7 +1417,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             var restartRequest = URLRequest(url: restartURL)
             restartRequest.httpMethod = "POST"
             restartRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            restartRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            restartRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let restartCommand: [String: Any] = [
                 "method": "exec",
@@ -1288,8 +1432,8 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 throw NetworkError.serverError((restartResponse as? HTTPURLResponse)?.statusCode ?? 500)
             }
             
-            print("✅ 重启命令已发送")
-            logger.info("✅ 重启命令已发送")
+            print("重启命令已发送")
+            logger.info("重启命令已发送")
             
             // 返回一个异步流来监控启动日志和服务状态
             return AsyncThrowingStream { continuation in
@@ -1308,7 +1452,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                             }
                             
                             var logRequest = URLRequest(url: logURL)
-                            logRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                            logRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                             
                             let (logData, _) = try await session.data(for: logRequest)
                             let logResponse = try JSONDecoder().decode(StartLogResponse.self, from: logData)
@@ -1327,7 +1471,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                                         
                                         // 检查日志是否包含成功标记
                                         if trimmedLog.contains("启动成功") {
-                                            continuation.yield("✅ OpenClash 服务已完全就绪")
+                                            continuation.yield("OpenClash 服务已完全就绪")
                                             continuation.finish()
                                             return
                                         }
@@ -1339,7 +1483,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                             var statusRequest = URLRequest(url: restartURL)
                             statusRequest.httpMethod = "POST"
                             statusRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                            statusRequest.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                            statusRequest.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                             
                             let statusCommand: [String: Any] = [
                                 "method": "exec",
@@ -1361,7 +1505,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                                     let elapsedTime = Date().timeIntervalSince(startTime)
                                     if elapsedTime >= 20 {  // 等待20秒确保服务完全启动
                                         hasWaitedAfterRunning = true
-                                        continuation.yield("✅ OpenClash 服务已就绪")
+                                        continuation.yield("OpenClash 服务已就绪")
                                         continuation.finish()
                                         break
                                     }
@@ -1371,7 +1515,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                             try await Task.sleep(nanoseconds: 100_000_000) // 0.1秒延迟
                             
                         } catch {
-                            continuation.yield("❌ 发生错误: \(error.localizedDescription)")
+                            continuation.yield("发生错误: \(error.localizedDescription)")
                             continuation.finish()
                             break
                         }
@@ -1398,13 +1542,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                         var seenLogs = Set<String>()
                         
                         // 发送第一条日志
-                        continuation.yield("🔄 切换配置文件...")
+                        continuation.yield("切换配置文件...")
                         
                         // 发送第二条日志
                         continuation.yield("🧹 清理 \(isNikki ? "Nikki" : "Mihomo") 运行日志...")
                         
                         // 发送第三条日志
-                        continuation.yield("🔄 重载 \(isNikki ? "Nikki" : "Mihomo") 服务...")
+                        continuation.yield("重载 \(isNikki ? "Nikki" : "Mihomo") 服务...")
                         
                         // 循环获取日志，直到看到成功启动的消息
                         while true {
@@ -1426,7 +1570,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                                         
                                         // 如果看到成功启动的消息，结束监控
                                         if log.contains("[App] Start Successful") {
-                                            continuation.yield("✅ \(isNikki ? "Nikki" : "Mihomo") 服务已完全启动")
+                                            continuation.yield("\(isNikki ? "Nikki" : "Mihomo") 服务已完全启动")
                                             continuation.finish()
                                             return
                                         }
@@ -1473,7 +1617,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let command: [String: Any] = [
             "method": "exec",
@@ -1504,19 +1648,19 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         
         guard let username = server.openWRTUsername,
               let password = server.openWRTPassword else {
-            // print("❌ 未找到认证信息")
-            logger.error("❌ 未找到认证信息")
+            // print("未找到认证信息")
+            logger.error("未找到认证信息")
             throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
         }
         
-        // print("🔑 获取认证令牌...")
-        logger.info("🔑 获取认证令牌...")
+        // print("获取认证令牌...")
+        // logger.info("获取认证令牌...")
         let token = try await getAuthToken(server, username: username, password: password)
-        // print("✅ 获取令牌成功: \(token)")
-        logger.info("✅ 获取令牌成功: \(token)")
+        // print("获取令牌成功: \(token)")
+        logger.info("获取令牌成功: \(token)")
         
         guard let url = URL(string: "\(baseURL)/cgi-bin/luci/rpc/sys?auth=\(token)") else {
-            // print("❌ 无效的 URL")
+            // print("无效的 URL")
             throw NetworkError.invalidURL
         }
         if packageName == "openclash" {
@@ -1532,7 +1676,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let command: [String: Any] = [
                 "method": "exec",
@@ -1545,13 +1689,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             
             guard let httpResponse = response as? HTTPURLResponse,
                 httpResponse.statusCode == 200 else {
-                // print("❌ 删除失败")
-                logger.error("❌ 删除失败")
+                // print("删除失败")
+                logger.error("删除失败")
                 throw NetworkError.serverError((response as? HTTPURLResponse)?.statusCode ?? 500)
             }
             
-            // print("✅ 配置文件删除成功")
-            logger.info("✅ 配置文件删除成功")
+            // print("配置文件删除成功")
+            logger.info("配置文件删除成功")
         } else {
             // mihomoTProxy
             
@@ -1565,7 +1709,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 // let removeCommand = "uci delete mihomo.\(configFilename.replacingOccurrences(of: ".yaml", with: "").replacingOccurrences(of: ".yml", with: "")) && uci commit mihomo"
                 // let removeResponse = try await makeUCIRequest(server, token: token, method: "sys", params: ["exec", [removeCommand]])
 
-                // logger.log("📥 删除订阅配置响应: \(removeResponse)")
+                // logger.log("删除订阅配置响应: \(removeResponse)")
                 deleteCommand = "rm '/etc/\(packagePrefix)/subscriptions/\(configFilename)'"
             } else {
                 deleteCommand = "rm '/etc/\(packagePrefix)/profiles/\(configFilename)'"
@@ -1574,7 +1718,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
             // print("🗑 开始删除配置文件: \(deleteCommand)")
 
             let deleteResponse = try await makeUCIRequest(server, token: token, method: "sys", params: ["exec", [deleteCommand]])
-            logger.info("📥 删除配置文件响应: \(deleteResponse)")
+            logger.info("删除配置文件响应: \(deleteResponse)")
 
         }
     }
@@ -1584,13 +1728,13 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 获取认证 token
         guard let username = server.openWRTUsername,
               let password = server.openWRTPassword else {
-            // print("❌ 未设置 OpenWRT 用户名或密码")
+            // print("未设置 OpenWRT 用户名或密码")
             throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
         }
         
-        // print("🔑 获取认证令牌...")
+        // print("获取认证令牌...")
         let token = try await getAuthToken(server, username: username, password: password)
-        // print("✅ 获取令牌成功")
+        // print("获取令牌成功")
         var configs: [OpenClashConfig] = []
         
         // 检查是否使用 nikki
@@ -1600,7 +1744,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 1. 获取 profiles 目录下的配置文件（非订阅）
         // print("📂 获取 profiles 目录下的配置文件...")
         let profilesResponse = try await makeUCIRequest(server, token: token, method: "fs", params: ["glob", ["/etc/\(packagePrefix)/profiles/*"]])
-        // print("📥 profiles 响应: \(profilesResponse)")
+        // print("profiles 响应: \(profilesResponse)")
         
         if let result = profilesResponse["result"] as? [Any],
            let profiles = result.first as? [String] {
@@ -1614,9 +1758,9 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 }
                 
                 // 获取文件元数据
-                // print("📊 获取文件元数据...")
+                // print("获取文件元数据...")
                 let metadata = try await makeUCIRequest(server, token: token, method: "fs", params: ["stat", [profile]])
-                logger.info("📥 文件元数据: \(metadata)")
+                logger.info("文件元数据: \(metadata)")
                 
                 if let stat = metadata["result"] as? [String: Any] {
                     let name = profile.replacingOccurrences(of: "/etc/\(packagePrefix)/profiles/", with: "")
@@ -1639,7 +1783,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                     var updatedConfig = config
                     updatedConfig.isSubscription = false
                     configs.append(updatedConfig)
-                    // logger.log("✅ 添加配置成功")
+                    // logger.log("添加配置成功")
                 }
             }
         }
@@ -1647,7 +1791,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 2. 获取 subscriptions 目录下的配置文件（订阅）
         // print("\n📂 获取 subscriptions 目录下的配置文件...")
         let subscriptionsResponse = try await makeUCIRequest(server, token: token, method: "fs", params: ["glob", ["/etc/\(packagePrefix)/subscriptions/*"]])
-        // print("📥 subscriptions 响应: \(subscriptionsResponse)")
+        // print("subscriptions 响应: \(subscriptionsResponse)")
         
         if let result = subscriptionsResponse["result"] as? [Any],
            let subscriptions = result.first as? [String] {
@@ -1663,16 +1807,16 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                 let subId = subscription.replacingOccurrences(of: "/etc/\(packagePrefix)/subscriptions/", with: "")
                 
                 // 获取订阅详情
-                // print("📊 获取订阅详情...")
+                // print("获取订阅详情...")
                 let detailResponse = try await makeUCIRequest(server, token: token, method: "sys", params: ["exec", ["uci show \(packagePrefix)." + subId.replacingOccurrences(of: ".yaml", with: "").replacingOccurrences(of: ".yml", with: "")]])
-                // print("📥 订阅详情响应: \(detailResponse)")
+                // print("订阅详情响应: \(detailResponse)")
                 
                 if let detailResult = detailResponse["result"] as? String,
                    !detailResult.isEmpty {  // 只有在有订阅详情时才继续处理
                     // 获取文件元数据
-                    // print("📊 获取文件元数据...")
+                    // print("获取文件元数据...")
                     let metadata = try await makeUCIRequest(server, token: token, method: "fs", params: ["stat", [subscription]])
-                    // print("📥 文件元数据: \(metadata)")
+                    // print("文件元数据: \(metadata)")
                     
                     if let stat = metadata["result"] as? [String: Any] {
 //                        let name = subId
@@ -1740,7 +1884,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                             subInfo: subData["url"] ?? "",
                             percent: percent
                         )
-                        // print("✅ 创建订阅信息成功")
+                        // print("创建订阅信息成功")
                         
                         // 创建并添加配置
                         let config = OpenClashConfig(
@@ -1755,7 +1899,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                         var updatedConfig = config
                         updatedConfig.isSubscription = true
                         configs.append(updatedConfig)
-                        // print("✅ 添加订阅配置成功")
+                        // print("添加订阅配置成功")
                     }
                 }
             }
@@ -1764,7 +1908,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         // 3. 获取当前使用的配置
         // print("\n🔍 获取当前使用的配置...")
         let currentConfigResponse = try await makeUCIRequest(server, token: token, method: "sys", params: ["exec", ["uci show \(packagePrefix).config.profile"]])
-        // logger.log("📥 当前配置响应: \(currentConfigResponse)")
+        // logger.log("当前配置响应: \(currentConfigResponse)")
         
         if let currentConfig = currentConfigResponse["result"] as? String,
            !currentConfig.isEmpty {  // 只在有结果时处理
@@ -1788,14 +1932,14 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
                               (configType == "file" && !config.isSubscription && config.name == configName)
                     if isMatch {
                         updatedConfig.state = .enabled
-                        // print("✅ 标记配置为启用状态: \(config.name)")
+                        // print("标记配置为启用状态: \(config.name)")
                     }
                     return updatedConfig
                 }
             }
         }
         
-        // print("\n📊 最终配置列表:")
+        // print("\n最终配置列表:")
         // for config in configs {
         //     print("- \(config.name) (订阅: \(config.isSubscription), 状态: \(config.state))")
         // }
@@ -1817,7 +1961,7 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let requestBody: [String: Any] = [
             "id": 1,
@@ -1873,5 +2017,302 @@ class ServerViewModel: NSObject, ObservableObject, URLSessionDelegate, URLSessio
         
         let token = try await getAuthToken(server, username: username, password: password)
         return try await isUsingNikki(server, token: token)
+    }
+    
+    // 添加上传配置文件的方法
+    func uploadConfigFile(_ server: ClashServer, fileData: Data, fileName: String, packageName: String) async throws {
+        let scheme = server.openWRTUseSSL ? "https" : "http"
+        guard let openWRTUrl = server.openWRTUrl else {
+            throw NetworkError.invalidURL
+        }
+        let baseURL = "\(scheme)://\(openWRTUrl):\(server.openWRTPort ?? "80")"
+        
+        logger.info("开始上传配置文件: \(fileName)")
+        
+        // 获取认证信息
+        guard let username = server.openWRTUsername,
+              let password = server.openWRTPassword else {
+            logger.error("未找到认证信息")
+            throw NetworkError.unauthorized(message: "未设置 OpenWRT 用户名或密码")
+        }
+        
+        // 获取认证 token
+        let token = try await getAuthToken(server, username: username, password: password)
+        
+        if packageName == "openclash" {
+            // OpenClash 使用不同的上传API
+            try await uploadOpenClashConfig(server, token: token, fileData: fileData, fileName: fileName, baseURL: baseURL)
+        } else {
+            // MihomoTProxy 使用 cgi-upload
+            try await uploadMihomoConfig(server, token: token, fileData: fileData, fileName: fileName, baseURL: baseURL)
+        }
+    }
+    
+    // OpenClash 上传方法
+    private func uploadOpenClashConfig(_ server: ClashServer, token: String, fileData: Data, fileName: String, baseURL: String) async throws {
+        // 1. 首先获取配置页面以提取动态 token
+        guard let configPageURL = URL(string: "\(baseURL)/cgi-bin/luci/admin/services/openclash/config") else {
+            throw NetworkError.invalidURL
+        }
+        
+        logger.info("OpenClash 获取配置页面: \(configPageURL)")
+        
+        // 创建获取配置页面的请求
+        var pageRequest = URLRequest(url: configPageURL)
+        pageRequest.httpMethod = "GET"
+        pageRequest.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7", forHTTPHeaderField: "Accept")
+        pageRequest.setValue("en-US,en;q=0.9,zh-CN;q=0.8,zh-TW;q=0.7,zh;q=0.6", forHTTPHeaderField: "Accept-Language")
+        pageRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        pageRequest.setValue("keep-alive", forHTTPHeaderField: "Connection")
+        pageRequest.setValue("1", forHTTPHeaderField: "DNT")
+        pageRequest.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        pageRequest.setValue("document", forHTTPHeaderField: "Sec-Fetch-Dest")
+        pageRequest.setValue("navigate", forHTTPHeaderField: "Sec-Fetch-Mode")
+        pageRequest.setValue("same-origin", forHTTPHeaderField: "Sec-Fetch-Site")
+        pageRequest.setValue("?1", forHTTPHeaderField: "Sec-Fetch-User")
+        pageRequest.setValue("1", forHTTPHeaderField: "Upgrade-Insecure-Requests")
+        pageRequest.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        
+        // 设置 Cookie
+        let cookieName = server.openWRTUseSSL ? "sysauth_https" : "sysauth_http"
+        pageRequest.setValue("\(cookieName)=\(token)", forHTTPHeaderField: "Cookie")
+        
+        let session = makeURLSession(for: server)
+        let (pageData, pageResponse) = try await session.data(for: pageRequest)
+        
+        guard let httpPageResponse = pageResponse as? HTTPURLResponse,
+              httpPageResponse.statusCode == 200 else {
+            logger.error("获取配置页面失败")
+            throw NetworkError.serverError((pageResponse as? HTTPURLResponse)?.statusCode ?? 500)
+        }
+        
+        // 2. 解析 HTML 内容，提取动态 token
+        guard let htmlContent = String(data: pageData, encoding: .utf8) else {
+            logger.error("无法解析 HTML 内容")
+            throw NetworkError.invalidResponse(message: "无法解析 HTML 内容")
+        }
+        
+        logger.debug("获取到 HTML 内容长度: \(htmlContent.count)")
+        
+        // 提取 JavaScript 中的 token
+        let dynamicToken = try extractTokenFromHTML(htmlContent)
+        logger.info("提取到动态 token: \(dynamicToken)")
+        
+        // 3. 使用动态 token 进行上传
+        guard let uploadURL = URL(string: "\(baseURL)/cgi-bin/luci/admin/services/openclash/config") else {
+            throw NetworkError.invalidURL
+        }
+        
+        logger.info("OpenClash 开始上传到: \(uploadURL)")
+        
+        // 创建 multipart/form-data 请求
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        
+        // 生成边界字符串
+        let boundary = "----WebKitFormBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        // 设置 Cookie
+        request.setValue("\(cookieName)=\(token)", forHTTPHeaderField: "Cookie")
+        
+        // 构建 multipart 数据
+        var body = Data()
+        
+        // 添加动态 token 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"token\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(dynamicToken)\r\n".data(using: .utf8)!)
+        
+        // 添加 cbi.submit 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"cbi.submit\"\r\n\r\n".data(using: .utf8)!)
+        body.append("1\r\n".data(using: .utf8)!)
+        
+        // 添加 file_type 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file_type\"\r\n\r\n".data(using: .utf8)!)
+        body.append("config\r\n".data(using: .utf8)!)
+        
+        // 添加 ulfile 字段（文件数据）
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"ulfile\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/x-yaml\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n".data(using: .utf8)!)
+        
+        // 添加 upload 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"upload\"\r\n\r\n".data(using: .utf8)!)
+        body.append("上传\r\n".data(using: .utf8)!)
+        
+        // 结束边界
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        request.httpBody = body
+        
+        // 发送请求
+        let (_, response) = try await session.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            logger.error("无效的响应类型")
+            throw NetworkError.invalidResponse(message: "无效的响应类型")
+        }
+        
+        logger.info("OpenClash 上传响应状态码: \(httpResponse.statusCode)")
+        
+        // if let responseData = String(data: data, encoding: .utf8) {
+        //     logger.info("OpenClash 上传响应内容: \(responseData)")
+        // }
+        
+        switch httpResponse.statusCode {
+        case 200:
+            logger.info("OpenClash 配置文件上传成功")
+        case 401:
+            logger.error("认证失败")
+            throw NetworkError.unauthorized(message: "认证失败，请检查用户名和密码")
+        case 413:
+            logger.error("文件过大")
+            throw NetworkError.invalidResponse(message: "文件过大，无法上传")
+        case 415:
+            logger.error("不支持的文件类型")
+            throw NetworkError.invalidResponse(message: "不支持的文件类型")
+        default:
+            logger.error("OpenClash 上传失败，状态码: \(httpResponse.statusCode)")
+            throw NetworkError.serverError(httpResponse.statusCode)
+        }
+    }
+    
+    // 从 HTML 内容中提取动态 token
+    private func extractTokenFromHTML(_ htmlContent: String) throws -> String {
+        logger.debug("🔍 开始提取动态 token")
+        
+        // 查找包含 LuCI 初始化的 script 标签
+        let patterns = [
+            #""token":\s*"([^"]+)""#,  // 匹配 "token": "value"
+            #"token":\s*"([^"]+)""#,   // 匹配 token: "value"
+            #""token"\s*:\s*"([^"]+)""# // 另一种匹配方式
+        ]
+        
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(location: 0, length: htmlContent.count)
+                if let match = regex.firstMatch(in: htmlContent, options: [], range: range) {
+                    if let tokenRange = Range(match.range(at: 1), in: htmlContent) {
+                        let token = String(htmlContent[tokenRange])
+                        logger.debug("成功提取到 token: \(token)")
+                        return token
+                    }
+                }
+            }
+        }
+        
+        // 如果正则表达式失败，尝试更简单的字符串查找
+        logger.debug("正则表达式提取失败，尝试字符串查找")
+        
+        // 查找 "token": " 开始的位置
+        if let tokenStart = htmlContent.range(of: "\"token\": \"") {
+            let afterToken = htmlContent[tokenStart.upperBound...]
+            if let tokenEnd = afterToken.range(of: "\"") {
+                let token = String(afterToken[..<tokenEnd.lowerBound])
+                logger.debug("字符串查找成功提取到 token: \(token)")
+                return token
+            }
+        }
+        
+        // 再尝试不带引号的版本
+        if let tokenStart = htmlContent.range(of: "token: \"") {
+            let afterToken = htmlContent[tokenStart.upperBound...]
+            if let tokenEnd = afterToken.range(of: "\"") {
+                let token = String(afterToken[..<tokenEnd.lowerBound])
+                logger.debug("备用字符串查找成功提取到 token: \(token)")
+                return token
+            }
+        }
+        
+        logger.error("无法从 HTML 中提取 token")
+        // logger.debug("HTML 内容片段: \(String(htmlContent.prefix(500)))")
+        throw NetworkError.invalidResponse(message: "无法从页面中提取动态 token")
+    }
+    
+    // MihomoTProxy 上传方法
+    private func uploadMihomoConfig(_ server: ClashServer, token: String, fileData: Data, fileName: String, baseURL: String) async throws {
+        // 检查是否使用 nikki
+        let isNikki = try await isUsingNikki(server, token: token)
+        let packagePrefix = isNikki ? "nikki" : "mihomo"
+        let targetPath = "/etc/\(packagePrefix)/profiles/\(fileName)"
+        
+        logger.info("MihomoTProxy 上传目标路径: \(targetPath)")
+        
+        // 构建上传 URL
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        guard let uploadURL = URL(string: "\(baseURL)/cgi-bin/cgi-upload?\(timestamp)") else {
+            throw NetworkError.invalidURL
+        }
+        
+        // 创建 multipart/form-data 请求
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        
+        // 生成边界字符串
+        let boundary = "----WebKitFormBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        // 构建 multipart 数据
+        var body = Data()
+        
+        // 添加 sessionid 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"sessionid\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(token)\r\n".data(using: .utf8)!)
+        
+        // 添加 filename 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"filename\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(targetPath)\r\n".data(using: .utf8)!)
+        
+        // 添加 filedata 字段
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"filedata\"; filename=\"\(fileName)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/x-yaml\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n".data(using: .utf8)!)
+        
+        // 结束边界
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        request.httpBody = body
+        
+        // 发送请求
+        let session = makeURLSession(for: server)
+        let (data, response) = try await session.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            logger.error("无效的响应类型")
+            throw NetworkError.invalidResponse(message: "无效的响应类型")
+        }
+        
+        logger.info("MihomoTProxy 上传响应状态码: \(httpResponse.statusCode)")
+        
+        if let responseData = String(data: data, encoding: .utf8) {
+            logger.info("MihomoTProxy 上传响应内容: \(responseData)")
+        }
+        
+        switch httpResponse.statusCode {
+        case 200:
+            logger.info("MihomoTProxy 配置文件上传成功")
+        case 401:
+            logger.error("认证失败")
+            throw NetworkError.unauthorized(message: "认证失败，请检查用户名和密码")
+        case 413:
+            logger.error("文件过大")
+            throw NetworkError.invalidResponse(message: "文件过大，无法上传")
+        case 415:
+            logger.error("不支持的文件类型")
+            throw NetworkError.invalidResponse(message: "不支持的文件类型")
+        default:
+            logger.error("MihomoTProxy 上传失败，状态码: \(httpResponse.statusCode)")
+            throw NetworkError.serverError(httpResponse.statusCode)
+        }
     }
 } 

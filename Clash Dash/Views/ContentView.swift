@@ -3,10 +3,12 @@ import UIKit
 import SafariServices
 import Network
 import NetworkExtension
+import CoreLocation
 
 struct ContentView: View {
     @StateObject private var viewModel: ServerViewModel
     @StateObject private var settingsViewModel = SettingsViewModel()
+    @StateObject private var locationManager = LocationManager()
     @State private var showingAddSheet = false
     @State private var editingServer: ClashServer?
     @State private var selectedQuickLaunchServer: ClashServer?
@@ -33,6 +35,8 @@ struct ContentView: View {
     @State private var draggedOffset: CGFloat = 0
     @State private var dragTargetIndex: Int?
     @State private var dragDirection: DragDirection = .none
+    @State private var showLocalNetworkDeniedAlert = false
+    @State private var isOnHomeScreen = true // 跟踪是否在首页
 
     private enum DragDirection {
         case up, down, none
@@ -78,7 +82,20 @@ struct ContentView: View {
             return 0
         }()
         
-        return NavigationLink(destination: ServerDetailView(server: server)) {
+        return NavigationLink(destination: ServerDetailView(server: server)
+            .onAppear {
+                // 导航到详情页面时，标记不在首页
+                print("🚪 导航到服务器详情页面: \(server.name)")
+                isOnHomeScreen = false
+                print("🏠 isOnHomeScreen 设置为: \(isOnHomeScreen)")
+            }
+            .onDisappear {
+                // 从详情页面返回时，标记回到首页
+                print("⬅️ 从服务器详情页面返回首页")
+                isOnHomeScreen = true
+                print("🏠 isOnHomeScreen 设置为: \(isOnHomeScreen)")
+            }
+        ) {
             ServerRowView(server: server)
                 .serverContextMenu(
                     viewModel: viewModel,
@@ -134,6 +151,73 @@ struct ContentView: View {
                     }
                 }
                 dragTargetIndex = index
+            }
+        }
+    }
+
+    // 权限校验与 Wi‑Fi SSID 更新
+    private func ensureLocalNetworkPermission() {
+        // logger.debug("开始检测本地网络权限…")
+        Task { @MainActor in
+            let granted = await LocalNetworkAuthorization().requestAuthorization()
+            logger.debug("本地网络权限状态: \(granted ? "已授权" : "被拒绝")")
+            if !granted {
+                showLocalNetworkDeniedAlert = true
+            }
+        }
+    }
+    
+    private func locationAuthDescription(_ status: CLAuthorizationStatus) -> String {
+        switch status {
+        case .authorizedWhenInUse: return "使用期间已授权"
+        case .authorizedAlways: return "始终已授权"
+        case .denied: return "被拒绝"
+        case .restricted: return "受限"
+        case .notDetermined: return "未确定"
+        @unknown default: return "未知"
+        }
+    }
+    
+    private func updateWiFiSSIDWithChecks() {
+        guard enableWiFiBinding else {
+            logger.debug("Wi‑Fi 绑定功能未启用，跳过获取 Wi‑Fi 信息")
+            currentWiFiSSID = ""
+            UserDefaults.standard.set("", forKey: "current_ssid")
+            return
+        }
+        
+        let status = locationManager.authorizationStatus
+        logger.debug("位置权限状态: \(locationAuthDescription(status))")
+        switch status {
+        case .notDetermined:
+            logger.debug("位置权限未确定，发起请求…")
+            locationManager.requestWhenInUseAuthorization()
+            return
+        case .denied:
+            logger.debug("位置权限被拒绝，无法获取 Wi‑Fi 名称")
+            locationManager.showLocationDeniedAlert = true
+            return
+        case .restricted:
+            logger.debug("位置权限受限，无法获取 Wi‑Fi 名称")
+            locationManager.showLocationDeniedAlert = true
+            return
+        default:
+            break
+        }
+        
+        NEHotspotNetwork.fetchCurrent { network in
+            DispatchQueue.main.async {
+                if let network = network {
+                    logger.debug("检测到 Wi‑Fi: \(network.ssid)")
+                    currentWiFiSSID = network.ssid
+                    UserDefaults.standard.set(network.ssid, forKey: "current_ssid")
+                    viewModel.logWiFiBindingSummary(currentWiFiSSID: network.ssid)
+                } else {
+                    logger.debug("未检测到 Wi‑Fi 连接")
+                    currentWiFiSSID = ""
+                    UserDefaults.standard.set("", forKey: "current_ssid")
+                    viewModel.logWiFiBindingSummary(currentWiFiSSID: "")
+                }
             }
         }
     }
@@ -219,10 +303,10 @@ struct ContentView: View {
                                     .padding(.horizontal, 32)
                                     .padding(.bottom, 40)
                             } else {
-                                Text("当前 Wi-Fi 下没有绑定的控制器")
+                                Text("当前 Wi‑Fi 下没有绑定的控制器")
                                     .font(.title2)
                                     .fontWeight(.medium)
-                                Text("您可以在 Wi-Fi 绑定设置中添加控制器")
+                                Text("您可以在 Wi‑Fi 绑定设置中添加控制器")
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
                                     .multilineTextAlignment(.center)
@@ -383,6 +467,7 @@ struct ContentView: View {
                 }
             }
             .refreshable {
+                print("🔄 用户触发下拉刷新，执行服务器状态检查")
                 await viewModel.checkAllServersStatus()
             }
             .alert("连接错误", isPresented: $viewModel.showError) {
@@ -393,6 +478,26 @@ struct ContentView: View {
                 } else {
                     Text(viewModel.errorMessage ?? "")
                 }
+            }
+            .alert("需要位置权限来获取 Wi‑Fi 信息", isPresented: $locationManager.showLocationDeniedAlert) {
+                Button("去设置") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("请在“设置-隐私与安全-定位服务”中允许“使用期间访问”，并获取精确位置，或请关闭 Wi‑Fi 绑定功能")
+            }
+            .alert("需要本地网络权限", isPresented: $showLocalNetworkDeniedAlert) {
+                Button("去设置") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("请在“设置-隐私与安全-本地网络”中允许访问，以便发现并连接局域网设备")
             }
             .overlay(alignment: .bottom) {
                 if showingModeChangeSuccess {
@@ -419,73 +524,83 @@ struct ContentView: View {
             // print("🎬 ContentView 出现")
             // 获取当前 Wi-Fi SSID
             if enableWiFiBinding {
-                NEHotspotNetwork.fetchCurrent { network in
-                    if let network = network {
-                        logger.debug("检测到 Wi-Fi: \(network.ssid)")
-                        currentWiFiSSID = network.ssid
-                    } else {
-                        logger.debug("未检测到 Wi-Fi 连接")
-                        currentWiFiSSID = ""
-                    }
-                }
+                logger.debug("Wi‑Fi 绑定已启用，准备检查权限并获取 Wi‑Fi 信息…")
+                ensureLocalNetworkPermission()
+                updateWiFiSSIDWithChecks()
             } else {
-                logger.debug("Wi-Fi 绑定功能未启用，跳过获取 Wi-Fi 信息")
+                logger.debug("Wi‑Fi 绑定功能未启用，跳过获取 Wi‑Fi 信息")
                 currentWiFiSSID = ""
+                UserDefaults.standard.set("", forKey: "current_ssid")
             }
             
-            // 首次打开时刷新服务器列表
-            Task {
-                await viewModel.checkAllServersStatus()
-            }
-            
+            // 检查是否有快速启动的服务器
+            _ = viewModel.servers.contains(where: { $0.isQuickLaunch })
+
             if let quickLaunchServer = viewModel.servers.first(where: { $0.isQuickLaunch }) {
                 selectedQuickLaunchServer = quickLaunchServer
                 showQuickLaunchDestination = true
+                print("⚡ 检测到快速启动服务器: \(quickLaunchServer.name)，跳过首页服务器状态检查")
+            } else {
+                // 首次打开时刷新服务器列表（仅在没有快速启动时）
+                print("🏠 首次打开App，当前在首页，执行服务器状态检查")
+                Task {
+                    await viewModel.checkAllServersStatus()
+                }
             }
             
             viewModel.setBingingManager(bindingManager)
         }
         .onChange(of: scenePhase) { newPhase in
             if newPhase == .active {
-                // print("🔄 应用进入活动状态")
-                // 从后台返回前台时刷新服务器列表和 Wi-Fi 状态
-                Task {
-                    await viewModel.checkAllServersStatus()
+                // print("应用进入活动状态")
+                // 从后台返回前台时刷新服务器列表和 Wi‑Fi 状态
+                // 检查是否有快速启动服务器，如果有则跳过检查
+                let hasQuickLaunch = viewModel.servers.contains(where: { $0.isQuickLaunch })
+
+                if hasQuickLaunch {
+                    print("⚡ 检测到快速启动服务器，从后台返回前台时跳过服务器状态检查")
+                } else {
+                    // 只有在首页且没有快速启动服务器时才检查状态，避免在详情页面的 Tab 中重复检查
+                    print("📱 从后台返回前台，当前是否在首页: \(isOnHomeScreen)")
+                    if isOnHomeScreen {
+                        print("✅ 在首页，执行服务器状态检查")
+                        Task {
+                            await viewModel.checkAllServersStatus()
+                        }
+                    } else {
+                        print("❌ 不在首页，跳过服务器状态检查")
+                    }
                 }
                 
-                // 更新当前 Wi-Fi SSID
                 if enableWiFiBinding {
-                    NEHotspotNetwork.fetchCurrent { network in
-                        if let network = network {
-                            // print("📡 检测到 Wi-Fi (后台恢复): \(network.ssid)")
-                            currentWiFiSSID = network.ssid
-                        } else {
-                            // print("❌ 未检测到 Wi-Fi 连接 (后台恢复)")
-                            currentWiFiSSID = ""
-                        }
-                    }
+                    logger.debug("App 回到前台，重新检查本地网络与位置权限…")
+                    ensureLocalNetworkPermission()
+                    updateWiFiSSIDWithChecks()
                 } else {
-                    // print("⚠️ Wi-Fi 绑定功能未启用，跳过获取 Wi-Fi 信息")
+                    // print("Wi-Fi 绑定功能未启用，跳过获取 Wi-Fi 信息")
                     currentWiFiSSID = ""
+                    UserDefaults.standard.set("", forKey: "current_ssid")
                 }
+            }
+        }
+        // 监听定位授权变化后，再次尝试更新 SSID
+        .onChange(of: locationManager.authorizationStatus) { newStatus in
+            logger.debug("位置权限变更: \(locationAuthDescription(newStatus))")
+            if enableWiFiBinding {
+                updateWiFiSSIDWithChecks()
             }
         }
         // 添加对 enableWiFiBinding 变化的监听
         .onChange(of: enableWiFiBinding) { newValue in
             if newValue {
-                // 功能启用时获取 Wi-Fi 信息
-                NEHotspotNetwork.fetchCurrent { network in
-                    if let network = network {
-                        // print("📡 检测到 Wi-Fi (功能启用): \(network.ssid)")
-                        currentWiFiSSID = network.ssid
-                    } else {
-                        // print("❌ 未检测到 Wi-Fi 连接 (功能启用)")
-                        currentWiFiSSID = ""
-                    }
-                }
+                // 功能启用时获取 Wi‑Fi 信息
+                logger.debug("开启 Wi‑Fi 绑定，检查权限并获取 Wi‑Fi 信息…")
+                ensureLocalNetworkPermission()
+                updateWiFiSSIDWithChecks()
             } else {
-                print("⚠️ Wi-Fi 绑定功能已禁用，清空 Wi-Fi 信息")
+                print("Wi-Fi 绑定功能已禁用，清空 Wi-Fi 信息")
                 currentWiFiSSID = ""
+                UserDefaults.standard.set("", forKey: "current_ssid")
             }
         }
         // 添加对 WiFiBindingManager 变化的监听
@@ -494,14 +609,21 @@ struct ContentView: View {
             logger.debug("Wi-Fi 绑定发生变化，新的绑定数量: \(newBindings.count)")
             // 强制刷新 filteredServers
             withAnimation {
-                // print("🔄 触发强制刷新")
+                // print("触发强制刷新")
                 forceRefresh.toggle()  // 切换强制刷新标志
             }
             // 刷新服务器状态
-            Task {
-                // print("🔄 开始刷新服务器状态")
-                await viewModel.checkAllServersStatus()
-                // print("✅ 服务器状态刷新完成")
+            // 只有在首页时才检查服务器状态，避免在详情页面的 Tab 中重复检查
+            print("📡 Wi-Fi 绑定变化，当前是否在首页: \(isOnHomeScreen)")
+            if isOnHomeScreen {
+                print("✅ 在首页，因Wi-Fi绑定变化执行服务器状态检查")
+                Task {
+                    // print("开始刷新服务器状态")
+                    await viewModel.checkAllServersStatus()
+                    // print("服务器状态刷新完成")
+                }
+            } else {
+                print("❌ 不在首页，跳过Wi-Fi绑定变化导致的服务器状态检查")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ControllersUpdated"))) { _ in

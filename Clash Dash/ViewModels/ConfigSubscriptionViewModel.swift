@@ -155,7 +155,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let command: [String: Any] = [
                 "method": "exec",
@@ -258,7 +258,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let getAllCommand: [String: Any] = [
                 "method": "exec",
@@ -426,7 +426,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
     func addSubscription(_ subscription: ConfigSubscription) async {
         if packageName == "openclash" {
             do {
-                // print("🔄 开始添加订阅: \(subscription.name)")
+                // print("开始添加订阅: \(subscription.name)")
                 // print("📝 订阅信息:")
                 // printSubscriptionState(subscription)
                 
@@ -445,7 +445,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                 
                 // 首先获取当前订阅数量
                 let countCommand: [String: Any] = [
@@ -547,28 +547,28 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     throw NetworkError.serverError(500)
                 }
                 
-                // print("✅ UCI命令执行成功")
+                // print("UCI命令执行成功")
                 logger.info("UCI命令执行成功")
                 
                 // 提交更改
                 try await commitChanges(token: token)
-                // print("✅ 更改已提交")
+                // print("更改已提交")
                 logger.info("更改已提交")
                 
                 // 重新加载订阅列表
                 await loadSubscriptions()
-                // print("✅ 订阅列表已刷新")
+                // print("订阅列表已刷新")
                 logger.info("订阅列表已刷新")
                 
             } catch {
-                // print("❌ 添加订阅失败: \(error.localizedDescription)")
+                // print("添加订阅失败: \(error.localizedDescription)")
                 logger.error("添加订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
             }
         } else {
             do {
-                // print("🔄 开始添加 MihomoTProxy 订阅: \(subscription.name)")
+                // print("开始添加 MihomoTProxy 订阅: \(subscription.name)")
                 // print("📝 订阅信息:")
                 // printSubscriptionState(subscription)
                 
@@ -587,7 +587,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                 
                 // 构建添加命令
                 let commands = [
@@ -621,16 +621,16 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     throw NetworkError.serverError(500)
                 }
                 
-                // print("✅ UCI命令执行成功")
+                // print("UCI命令执行成功")
                 logger.info("UCI命令执行成功")
                 
                 // 重新加载订阅列表
                 await loadSubscriptions()
-                // print("✅ 订阅列表已刷新")
+                // print("订阅列表已刷新")
                 logger.info("订阅列表已刷新")
                 
             } catch {
-                // print("❌ 添加订阅失败: \(error.localizedDescription)")
+                // print("添加订阅失败: \(error.localizedDescription)")
                 logger.error("添加订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
@@ -670,8 +670,8 @@ class ConfigSubscriptionViewModel: ObservableObject {
     func updateSubscription(_ subscription: ConfigSubscription) async {
         if packageName == "openclash" {
             do {
-                // print("🔄 开始更新订阅: \(subscription.name)")
-                logger.info("🔄 开始更新订阅: \(subscription.name)")
+                // print("开始更新订阅: \(subscription.name)")
+                logger.info("开始更新订阅: \(subscription.name)")
                 // print("📝 当前订阅状态:")
                 // printSubscriptionState(subscription)
                 
@@ -809,7 +809,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                    request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                     
                     let command: [String: Any] = [
                         "method": "exec",
@@ -822,7 +822,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     
                     guard let httpResponse = response as? HTTPURLResponse,
                         httpResponse.statusCode == 200 else {
-                        // print("❌ 服务器返回错误状态码: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                        // print("服务器返回错误状态码: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                         throw NetworkError.serverError(500)
                     }
                     
@@ -835,27 +835,27 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     // print("📤 发送的命令:")
                     print(commands.joined(separator: " && "))
                     
-                    // print("✅ UCI命令执行成功")
+                    // print("UCI命令执行成功")
                     
                     // 提交更改
                     try await commitChanges(token: token)
-                    // print("✅ 更改已提交")
+                    // print("更改已提交")
                     
                     // 重新加载订阅列表
                     await loadSubscriptions()
-                    // print("✅ 订阅列表已刷新")
+                    // print("订阅列表已刷新")
                     logger.info("订阅列表已刷新")
                 }
                 
             } catch {
-                // print("❌ 更新订阅失败: \(error.localizedDescription)")
+                // print("更新订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
             }
         } else {
             do {
-                // print("🔄 开始更新 MihomoTProxy 订阅: \(subscription.name)")
-                logger.info("🔄 开始更新 Nikki 订阅: \(subscription.name)")
+                // print("开始更新 MihomoTProxy 订阅: \(subscription.name)")
+                logger.info("开始更新 Nikki 订阅: \(subscription.name)")
                 
                 let token = try await getAuthToken()
                 
@@ -872,7 +872,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                 
                 // 构建更新命令
                 let commands = [
@@ -905,16 +905,16 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     throw NetworkError.serverError(500)
                 }
                 
-                // print("✅ UCI命令执行成功")
+                // print("UCI命令执行成功")
                 logger.info("UCI命令执行成功")
                 
                 // 重新加载订阅列表
                 await loadSubscriptions()
-                // print("✅ 订阅列表已刷新")
+                // print("订阅列表已刷新")
                 logger.info("订阅列表已刷新")
                 
             } catch {
-                // print("❌ 更新订阅失败: \(error.localizedDescription)")
+                // print("更新订阅失败: \(error.localizedDescription)")
                 logger.error("更新订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
@@ -923,7 +923,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
     }
     
     func toggleSubscription(_ subscription: ConfigSubscription, enabled: Bool) async {
-        // print("🔄 切换订阅状态: \(subscription.name) -> \(enabled ? "启用" : "禁用")")
+        // print("切换订阅状态: \(subscription.name) -> \(enabled ? "启用" : "禁用")")
         do {
             let token = try await getAuthToken()
             
@@ -940,7 +940,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let command: [String: Any] = [
                 "method": "exec",
@@ -954,28 +954,28 @@ class ConfigSubscriptionViewModel: ObservableObject {
             
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                // print("❌ 服务器返回错误状态码: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                // print("服务器返回错误状态码: \((response as? HTTPURLResponse)?.statusCode ?? 0)")
                 throw NetworkError.serverError(500)
             }
             
             let uciResponse: UCIResponse = try JSONDecoder().decode(UCIResponse.self, from: data)
             if let error = uciResponse.error, !error.isEmpty {
-                // print("❌ UCI命令执行失败: \(error)")
+                // print("UCI命令执行失败: \(error)")
                 throw NetworkError.serverError(500)
             }
             
-            // print("✅ UCI命令执行成功")
+            // print("UCI命令执行成功")
             
             // 提交更改
             try await commitChanges(token: token)
-            // print("✅ 更改已提交")
+            // print("更改已提交")
             
             // 重新加载订阅列表
             await loadSubscriptions()
-            // print("✅ 订阅列表已刷新")
+            // print("订阅列表已刷新")
             
         } catch {
-            // print("❌ 切换订阅状态失败: \(error.localizedDescription)")
+            // print("切换订阅状态失败: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
             showError = true
         }
@@ -994,7 +994,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let command: [String: Any] = [
             "method": "exec",
@@ -1093,7 +1093,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
             
             let command: [String: Any] = [
                 "method": "exec",
@@ -1124,7 +1124,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "'")) }
 
         } catch {
-            // print("❌ 加载模板选项失败: \(error.localizedDescription)")
+            // print("加载模板选项失败: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
             showError = true
         }
@@ -1151,7 +1151,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                 
                 // 删除命令
                 let commands = [
@@ -1177,14 +1177,14 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     throw NetworkError.serverError(500)
                 }
                 
-                // print("✅ 删除成功")
+                // print("删除成功")
                 logger.info("删除成功")
                 
                 // 重新加载订阅列表
                 await loadSubscriptions()
                 
             } catch {
-                // print("❌ 删除订阅失败: \(error.localizedDescription)")
+                // print("删除订阅失败: \(error.localizedDescription)")
                 logger.error("删除订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
@@ -1209,7 +1209,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+                request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
                 
                 // 删除命令
                 let commands = [
@@ -1235,14 +1235,14 @@ class ConfigSubscriptionViewModel: ObservableObject {
                     throw NetworkError.serverError(500)
                 }
                 
-                // print("✅ 删除成功")
+                // print("删除成功")
                 logger.info("删除成功")
                 
                 // 重新加载订阅列表
                 await loadSubscriptions()
                 
             } catch {
-                // print("❌ 删除订阅失败: \(error.localizedDescription)")
+                // print("删除订阅失败: \(error.localizedDescription)")
                 logger.error("删除订阅失败: \(error.localizedDescription)")
                 errorMessage = error.localizedDescription
                 showError = true
@@ -1271,7 +1271,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let command: [String: Any] = [
             "method": "exec",
@@ -1318,7 +1318,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         // 获取订阅详情
         let getDetailCommand: [String: Any] = [
@@ -1408,7 +1408,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sysauth=\(token); sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth=\(token); sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let command: [String: Any] = [
             "id": 1,
@@ -1456,7 +1456,7 @@ class ConfigSubscriptionViewModel: ObservableObject {
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("no-cache", forHTTPHeaderField: "Pragma")
-        request.setValue("sysauth_http=\(token)", forHTTPHeaderField: "Cookie")
+        request.setValue("sysauth_http=\(token); sysauth_https=\(token)", forHTTPHeaderField: "Cookie")
         
         let (_, response) = try await URLSession.secure.data(for: request)
         

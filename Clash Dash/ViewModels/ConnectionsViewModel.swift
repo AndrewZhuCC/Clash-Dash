@@ -2,7 +2,8 @@ import Foundation
 import Combine
 import SwiftUI  // 添加这行
 
-class ConnectionsViewModel: ObservableObject {
+@MainActor
+class ConnectionsViewModel: ObservableObject, Sendable {
     @AppStorage("connectionRowStyle") var connectionRowStyle = ConnectionRowStyle.classic
     enum ConnectionState: Equatable {
         case disconnected
@@ -155,7 +156,7 @@ class ConnectionsViewModel: ObservableObject {
         // 构建 WebSocket URL，支持 SSL
         let scheme = server.clashUseSSL ? "wss" : "ws"
         guard let url = URL(string: "\(scheme)://\(server.url):\(server.port)/connections") else {
-            log("❌ URL 构建失败")
+            log("URL 构建失败")
             DispatchQueue.main.async { [weak self] in
                 self?.connectionState = .error("URL 构建失败")
             }
@@ -185,7 +186,7 @@ class ConnectionsViewModel: ObservableObject {
                 let (_, response) = try await session.data(for: testRequest)
                 
                 if let httpResponse = response as? HTTPURLResponse {
-                    // log("✅ HTTP 连接测试状态码: \(httpResponse.statusCode)")
+                    // log("HTTP 连接测试状态码: \(httpResponse.statusCode)")
                     
                     if httpResponse.statusCode == 401 {
                         DispatchQueue.main.async { [weak self] in
@@ -218,14 +219,14 @@ class ConnectionsViewModel: ObservableObject {
                 receiveConnectionsData()
                 
             } catch {
-                log("❌ HTTP 连接测试失败: \(error.localizedDescription)")
+                log("HTTP 连接测试失败: \(error.localizedDescription)")
                 handleConnectionError(error)
             }
         }
     }
     
     private func handleConnectionError(_ error: Error) {
-        log("❌ 连接错误：\(error.localizedDescription)")
+        log("连接错误：\(error.localizedDescription)")
         
         DispatchQueue.main.async { [weak self] in
             self?.connectionState = .error(error.localizedDescription)
@@ -234,17 +235,17 @@ class ConnectionsViewModel: ObservableObject {
         if let urlError = error as? URLError {
             switch urlError.code {
             case .secureConnectionFailed:
-                log("❌ SSL/TLS 连接失败")
+                log("SSL/TLS 连接失败")
                 DispatchQueue.main.async { [weak self] in
                     self?.connectionState = .error("SSL/TLS 连接失败，请检查证书配置")
                 }
             case .serverCertificateUntrusted:
-                log("❌ 服务器证书不受信任")
+                log("服务器证书不受信任")
                 DispatchQueue.main.async { [weak self] in
                     self?.connectionState = .error("服务器证书不受信任")
                 }
             case .clientCertificateRejected:
-                log("❌ 客户端证书被拒绝")
+                log("客户端证书被拒绝")
                 DispatchQueue.main.async { [weak self] in
                     self?.connectionState = .error("客户端证书被拒绝")
                 }
@@ -256,39 +257,41 @@ class ConnectionsViewModel: ObservableObject {
     
     private func receiveConnectionsData() {
         guard let task = connectionsTask, isMonitoring else { return }
-        
+
         task.receive { [weak self] result in
-            guard let self = self, self.isMonitoring else { return }
-            
-            switch result {
-            case .success(let message):
-                // 成功接收消息时重置错误计数
-                self.errorTracker.reset()
-                
-                switch message {
-                case .string(let text):
-                    if let data = text.data(using: .utf8) {
+            guard let self = self else { return }
+
+            Task { @MainActor in
+                guard self.isMonitoring else { return }
+
+                switch result {
+                case .success(let message):
+                    // 成功接收消息时重置错误计数
+                    self.errorTracker.reset()
+
+                    switch message {
+                    case .string(let text):
+                        if let data = text.data(using: .utf8) {
+                            self.handleConnectionsMessage(data)
+                        }
+                    case .data(let data):
                         self.handleConnectionsMessage(data)
+                    @unknown default:
+                        break
                     }
-                case .data(let data):
-                    self.handleConnectionsMessage(data)
-                @unknown default:
-                    break
-                }
-                
-                // 继续接收下一条消息
-                self.receiveConnectionsData()
-                
-            case .failure(let error):
-                self.log("❌ WebSocket 错误：\(error.localizedDescription)")
-                
-                if errorTracker.recordError() {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.connectionState = .error("连接失败，请检查网络或服务器状态")
+
+                    // 继续接收下一条消息
+                    self.receiveConnectionsData()
+
+                case .failure(let error):
+                    self.log("WebSocket 错误：\(error.localizedDescription)")
+
+                    if self.errorTracker.recordError() {
+                        self.connectionState = .error("连接失败，请检查网络或服务器状态")
+                        self.stopMonitoring()
+                    } else {
+                        self.reconnect()
                     }
-                    self.stopMonitoring()
-                } else {
-                    self.reconnect()
                 }
             }
         }
@@ -489,7 +492,7 @@ class ConnectionsViewModel: ObservableObject {
                 self.updateConnectionState(.connected)
             }
         } catch {
-            log("❌ 解码错误：\(error)")
+            log("解码错误：\(error)")
             if let decodingError = error as? DecodingError {
                 switch decodingError {
                 case .dataCorrupted(let context):
@@ -559,7 +562,7 @@ class ConnectionsViewModel: ObservableObject {
                     }
                 }
             } catch {
-                log("❌ 关闭连接失败: \(error.localizedDescription)")
+                log("关闭连接失败: \(error.localizedDescription)")
             }
         }
     }
@@ -579,7 +582,7 @@ class ConnectionsViewModel: ObservableObject {
                     }
                 }
             } catch {
-                log("❌ 关闭所有连接失败: \(error.localizedDescription)")
+                log("关闭所有连接失败: \(error.localizedDescription)")
             }
         }
     }
@@ -624,7 +627,7 @@ class ConnectionsViewModel: ObservableObject {
     }
     
     private func handleWebSocketError(_ error: Error) {
-        log("❌ WebSocket 错误：\(error.localizedDescription)")
+        log("WebSocket 错误：\(error.localizedDescription)")
         
         if errorTracker.recordError() {
             DispatchQueue.main.async { [weak self] in
@@ -660,7 +663,7 @@ class ConnectionsViewModel: ObservableObject {
         
         print("清理后连接数量:", connections.count)
         print("清理后历史连接数量:", previousConnections.count)
-        print("✅ 清理完成")
+        print("清理完成")
         print("-------------------\n")
     }
     

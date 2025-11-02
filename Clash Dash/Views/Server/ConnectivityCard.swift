@@ -64,7 +64,7 @@ struct ConnectivityCard: View {
                 // 添加检查端口按钮
                 Button(action: {
                     // 从服务器查询实际的HTTP端口
-                    if let server = viewModel.clashServer {
+                    if viewModel.clashServer != nil {
                         print("🔍 尝试重新获取HTTP端口...")
                         // 这里假设您有一个方法可以专门获取HTTP端口
                         Task {
@@ -128,7 +128,7 @@ struct ConnectivityCard: View {
                 server = serverFromEnv
                 let httpPort = settingsViewModel.httpPort
                 viewModel.setupWithServer(serverFromEnv, httpPort: httpPort, settingsViewModel: settingsViewModel)
-                print("⚙️ ConnectivityCard - 已重新设置服务器: \(serverFromEnv.url) 端口: \(httpPort)")
+                print("已重新设置控制器: \(serverFromEnv.url) 端口: \(httpPort)")
             }
         }
     }
@@ -244,15 +244,13 @@ struct ConnectivityItem: View {
     viewModel.websites[0].isConnected = true
     viewModel.websites[1].isChecking = true
     viewModel.websites[2].error = "连接超时"
-    @State var showDirect = false
-    @State var showProxy = false
 
     return VStack {
         ConnectivityCard(
             viewModel: viewModel,
             settingsViewModel: SettingsViewModel(),
-            showingDirectConnectionInfo: $showDirect,
-            showingProxyConnectionInfo: $showProxy
+            showingDirectConnectionInfo: .constant(false),
+            showingProxyConnectionInfo: .constant(false)
         )
     }
     .padding()

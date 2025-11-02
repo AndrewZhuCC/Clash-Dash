@@ -10,6 +10,7 @@ struct ConnectionsView: View {
     @State private var showMenu = false
     @State private var showClientTagSheet = false
     @State private var selectedConnection: ClashConnection?
+    @Environment(\.floatingTabBarVisible) private var floatingTabBarVisible
     
     // 获取默认排序设置
     @AppStorage("defaultConnectionSortOption") private var defaultSortOption = DefaultConnectionSortOption.startTime
@@ -103,6 +104,9 @@ struct ConnectionsView: View {
         case map
     }
     @State private var viewMode: ViewMode = .list
+    
+    // 添加排序 sheet 状态
+    @State private var showSortSheet = false
     
     // 在 SortOption 枚举前添加 DeviceFilterButton
     private var deviceFilterButton: some View {
@@ -409,12 +413,18 @@ struct ConnectionsView: View {
     
     // 修改菜单按钮部分
     var menuButtons: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .trailing, spacing: 8) {
             if showMenu {
+                // 固定一个最小宽度以防元素长度差异导致主按钮横向被挤动
+                // 根据贴纸最宽可能值估算，保证主按钮位置稳定
+                Color.clear.frame(width: 1) // 保持对齐标记
+                    .frame(maxWidth: 0)
+
                 // 搜索按钮 - 添加到菜单的最上方
-                MenuButton(
+                StickerMenuButton(
+                    text: "搜索连接",
                     icon: "magnifyingglass",
-                    color: showSearch ? .green : .gray,
+                    tint: showSearch ? .green : .blue,
                     action: {
                         withAnimation {
                             showSearch.toggle()
@@ -430,9 +440,10 @@ struct ConnectionsView: View {
                 
                 // 如果有搜索结果，显示终止筛选连接的按钮
                 if !searchText.isEmpty && !filteredConnections.isEmpty {
-                    MenuButton(
+                    StickerMenuButton(
+                        text: "终止筛选",
                         icon: "xmark.circle",
-                        color: .red,
+                        tint: .red,
                         action: {
                             showCloseFilteredConfirmation = true
                         }
@@ -441,9 +452,10 @@ struct ConnectionsView: View {
                 }
                 
                 // 暂停/继续监控
-                MenuButton(
+                StickerMenuButton(
+                    text: viewModel.isMonitoring ? "暂停监控" : "继续监控",
                     icon: viewModel.isMonitoring ? "pause.fill" : "play.fill",
-                    color: .accentColor,
+                    tint: .accentColor,
                     action: {
                         viewModel.toggleMonitoring()
                         showMenu = false
@@ -452,9 +464,10 @@ struct ConnectionsView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 
                 // 客户端标签
-                MenuButton(
+                StickerMenuButton(
+                    text: "客户端标签",
                     icon: "tag.fill",
-                    color: .blue,
+                    tint: .blue,
                     action: {
                         showClientTagSheet = true
                         showMenu = false
@@ -463,9 +476,10 @@ struct ConnectionsView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 
                 // 刷新视图
-                MenuButton(
+                StickerMenuButton(
+                    text: "刷新",
                     icon: "arrow.clockwise",
-                    color: .green,
+                    tint: .green,
                     action: {
                         Task {
                             await viewModel.refresh()
@@ -476,9 +490,10 @@ struct ConnectionsView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 
                 // 清理已断开连接
-                MenuButton(
+                StickerMenuButton(
+                    text: "清理已断开连接",
                     icon: "trash.fill",
-                    color: .orange,
+                    tint: .orange,
                     action: {
                         showClearClosedConfirmation = true
                     }
@@ -486,9 +501,10 @@ struct ConnectionsView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 
                 // 终止所有连接
-                MenuButton(
+                StickerMenuButton(
+                    text: "打断全部连接",
                     icon: "xmark.circle.fill",
-                    color: .red,
+                    tint: .red,
                     action: {
                         showCloseAllConfirmation = true
                     }
@@ -498,20 +514,23 @@ struct ConnectionsView: View {
             
             // 修改主按钮的旋转角度
             Button(action: {
+                HapticManager.shared.impact(.light)
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                     showMenu.toggle()
                 }
             }) {
-                Circle()
-                    .fill(Color(.systemBackground))
-                    .frame(width: 48, height: 48)
-                    .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
-                    .overlay {
-                        Image(systemName: "ellipsis")
-                            .rotationEffect(.degrees(showMenu ? 90 : 0))
-                            .foregroundColor(.accentColor)
-                            .font(.system(size: 24, weight: .semibold))
-                    }
+                ZStack {
+                    Circle()
+                        .fill(Color(.systemBackground))
+                        .frame(width: 48, height: 48)
+                        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+                        .overlay {
+                            Image(systemName: "ellipsis")
+                                .rotationEffect(.degrees(showMenu ? 90 : 0))
+                                .foregroundColor(.accentColor)
+                                .font(.system(size: 24, weight: .semibold))
+                        }
+                }
             }
         }
         .alert("确定清理已断开连接", isPresented: $showClearClosedConfirmation) {
@@ -604,24 +623,8 @@ struct ConnectionsView: View {
             deviceFilterButton
             
             // 排序按钮
-            Menu {
-                ForEach(SortOption.allCases, id: \.self) { option in
-                    Button {
-                        if selectedSortOption == option {
-                            isAscending.toggle()
-                        } else {
-                            selectedSortOption = option
-                            isAscending = false
-                        }
-                    } label: {
-                        HStack {
-                            Label(option.rawValue, systemImage: option.icon)
-                            if selectedSortOption == option {
-                                Image(systemName: isAscending ? "chevron.up" : "chevron.down")
-                            }
-                        }
-                    }
-                }
+            Button {
+                showSortSheet = true
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: selectedSortOption.icon)
@@ -637,6 +640,164 @@ struct ConnectionsView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(.systemBackground))
+    }
+    
+    // 精致小巧的排序选择器
+    private var sortSheetView: some View {
+        VStack(spacing: 0) {
+            // 精美的顶部装饰
+            VStack(spacing: 12) {
+                // 标题区域
+                HStack(spacing: 12) {
+                    // 装饰图标
+                    ZStack {
+                        Circle()
+                            .fill(Color.accentColor.opacity(0.15))
+                            .frame(width: 32, height: 32)
+                        
+                        Image(systemName: "arrow.up.arrow.down")
+                            .foregroundColor(.accentColor)
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("排序方式")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.primary)
+                        
+                        Text("\(selectedSortOption.rawValue) • \(isAscending ? "升序" : "降序")")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+            }
+            .background(
+                LinearGradient(
+                    colors: [Color(.systemBackground), Color(.systemGroupedBackground)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            
+            // 选项卡片列表
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(SortOption.allCases, id: \.self) { option in
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                if selectedSortOption == option {
+                                    isAscending.toggle()
+                                } else {
+                                    selectedSortOption = option
+                                    isAscending = false
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 14) {
+                                // 精美图标设计
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(
+                                            selectedSortOption == option ? 
+                                            LinearGradient(
+                                                colors: [Color.accentColor, Color.accentColor.opacity(0.8)],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ) :
+                                            LinearGradient(
+                                                colors: [Color(.systemGray6), Color(.systemGray5)],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            )
+                                        )
+                                        .frame(width: 36, height: 36)
+                                        .shadow(
+                                            color: selectedSortOption == option ? 
+                                            Color.accentColor.opacity(0.3) : Color.black.opacity(0.05),
+                                            radius: selectedSortOption == option ? 4 : 2,
+                                            x: 0,
+                                            y: selectedSortOption == option ? 2 : 1
+                                        )
+                                    
+                                    Image(systemName: option.icon)
+                                        .foregroundColor(selectedSortOption == option ? .white : .accentColor)
+                                        .font(.system(size: 16, weight: .semibold))
+                                }
+                                
+                                // 文字内容
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(option.rawValue)
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundColor(.primary)
+                                    
+                                    if selectedSortOption == option {
+                                        Text(isAscending ? "升序排列" : "降序排列")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                // 状态指示器
+                                if selectedSortOption == option {
+                                    HStack(spacing: 6) {
+                                        // 方向切换按钮
+                                        Button {
+                                            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                                                isAscending.toggle()
+                                            }
+                                        } label: {
+                                            ZStack {
+                                                Circle()
+                                                    .fill(isAscending ? Color.blue.opacity(0.15) : Color.orange.opacity(0.15))
+                                                    .frame(width: 28, height: 28)
+                                                
+                                                Image(systemName: isAscending ? "arrow.up" : "arrow.down")
+                                                    .foregroundColor(isAscending ? .blue : .orange)
+                                                    .font(.system(size: 12, weight: .bold))
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        
+                                        // 选中指示
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.accentColor)
+                                            .font(.system(size: 18))
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(.systemBackground))
+                                    .shadow(
+                                        color: Color.black.opacity(selectedSortOption == option ? 0.08 : 0.03),
+                                        radius: selectedSortOption == option ? 8 : 3,
+                                        x: 0,
+                                        y: selectedSortOption == option ? 3 : 1
+                                    )
+                            )
+                            .scaleEffect(selectedSortOption == option ? 1.02 : 1.0)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .background(Color(.systemGroupedBackground))
+        }
+        .background(Color(.systemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .presentationDetents([.height(320)])
+        .presentationDragIndicator(.hidden)
     }
     
     private func EmptyStateView() -> some View {
@@ -753,7 +914,11 @@ struct ConnectionsView: View {
             }
             
             menuButtons
-                .padding()
+                .padding(.trailing, 16)
+                .padding(.top, 16)
+                .padding(.bottom, floatingTabBarVisible ? 104 : 16)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .animation(.easeInOut(duration: 0.3), value: floatingTabBarVisible)
         }
         .sheet(item: $selectedConnection) { connection in
             NavigationStack {
@@ -791,6 +956,9 @@ struct ConnectionsView: View {
                 }
             }
         }
+        .sheet(isPresented: $showSortSheet) {
+            sortSheetView
+        }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
     }
 }
@@ -802,7 +970,10 @@ struct MenuButton: View {
     let action: () -> Void
     
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            HapticManager.shared.impact(.light)
+            action()
+        }) {
             Circle()
                 .fill(Color(.systemBackground))
                 .frame(width: 40, height: 40)
@@ -813,6 +984,36 @@ struct MenuButton: View {
                         .font(.system(size: 14, weight: .semibold))
                 }
         }
+    }
+}
+
+// 贴纸样式的菜单子项（文字 + 图标）
+struct StickerMenuButton: View {
+    let text: String
+    let icon: String
+    var tint: Color = .blue
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: {
+            HapticManager.shared.impact(.light)
+            action()
+        }) {
+            StickerTagView(
+                text: text,
+                systemImage: icon,
+                tint: tint,
+                rotation: .degrees(-3),
+                iconPosition: .trailing,
+                contentPadding: EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10),
+                textFont: .system(size: 13, weight: .medium),
+                iconFont: .system(size: 14, weight: .semibold),
+                cornerRadius: 12,
+                shadowRadius: 6,
+                shadowOpacity: 0.04
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
